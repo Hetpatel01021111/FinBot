@@ -64,7 +64,6 @@ export async function getUserAccounts() {
     console.error(error.message);
   }
 }
-}
 
 export async function createAccount(data) {
   try {

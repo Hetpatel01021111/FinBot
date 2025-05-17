@@ -1,8 +1,0 @@
-{
-  "version": 2,
-  "buildCommand": "",
-  "devCommand": "next dev --turbopack",
-  "framework": "nextjs",
-  "installCommand": "npm install --legacy-peer-deps",
-  "outputDirectory": ""
-}

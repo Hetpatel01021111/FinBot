@@ -1,6 +1,5 @@
 "use client";
 
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -14,16 +13,22 @@ export default function SettingsLayout({ children }) {
         Manage your FinBox account settings and preferences
       </p>
       
-      <Tabs defaultValue="api-token" className="mb-8">
-        <TabsList className="grid grid-cols-2 w-[400px]">
-          <Link href="/settings/api-token" passHref>
-            <TabsTrigger value="api-token">API Token</TabsTrigger>
+      <div className="mb-8">
+        <nav className="flex space-x-2 bg-gray-100 p-1 rounded-md w-[400px]">
+          <Link 
+            href="/settings/api-token" 
+            className={`px-4 py-2 rounded-sm text-sm font-medium transition-colors ${usePathname() === '/settings/api-token' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-900'}`}
+          >
+            API Token
           </Link>
-          <Link href="/settings/profile" passHref>
-            <TabsTrigger value="profile">Profile</TabsTrigger>
+          <Link 
+            href="/settings/profile" 
+            className={`px-4 py-2 rounded-sm text-sm font-medium transition-colors ${usePathname() === '/settings/profile' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-900'}`}
+          >
+            Profile
           </Link>
-        </TabsList>
-      </Tabs>
+        </nav>
+      </div>
       
       {children}
     </div>

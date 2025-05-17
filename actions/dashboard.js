@@ -21,12 +21,26 @@ export async function getUserAccounts() {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorized");
 
-  const user = await db.user.findUnique({
+  // Try to find the user
+  let user = await db.user.findUnique({
     where: { clerkUserId: userId },
   });
 
+  // If user doesn't exist, create a new user
   if (!user) {
-    throw new Error("User not found");
+    try {
+      user = await db.user.create({
+        data: {
+          clerkUserId: userId,
+          email: "user@example.com", // Default email, will be updated later
+          name: "New User", // Default name, will be updated later
+        },
+      });
+      console.log("Created new user:", user.id);
+    } catch (error) {
+      console.error("Error creating user:", error);
+      throw new Error("Failed to create user");
+    }
   }
 
   try {
@@ -49,6 +63,7 @@ export async function getUserAccounts() {
   } catch (error) {
     console.error(error.message);
   }
+}
 }
 
 export async function createAccount(data) {

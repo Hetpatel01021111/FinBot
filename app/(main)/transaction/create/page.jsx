@@ -3,6 +3,9 @@ import { defaultCategories } from "@/data/categories";
 import { AddTransactionForm } from "../_components/transaction-form";
 import { getTransaction } from "@/actions/transaction";
 
+// Force dynamic rendering for this page
+export const dynamic = 'force-dynamic';
+
 export default async function AddTransactionPage({ searchParams }) {
   const accounts = await getUserAccounts();
   // Ensure searchParams is awaited before destructuring

@@ -45,7 +45,7 @@ const Header = () => {
         >
           <Link href="/" className="flex items-center">
             <Image
-              src="/logo.png"
+              src="/Logo.png"
               alt="FinBox Logo"
               width={200}
               height={60}

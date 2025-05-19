@@ -100,53 +100,99 @@ export async function getUserAccounts() {
 
 export async function createAccount(data) {
   try {
+    console.log("Starting account creation with data:", { ...data, balance: data.balance ? 'REDACTED' : undefined });
+    
+    // Get authenticated user ID from Clerk
     const { userId } = await auth();
-    if (!userId) throw new Error("Unauthorized");
-
-    // Get request data for ArcJet
-    const req = await request();
-
-    // Find user
-    const user = await db.user.findUnique({
-      where: { clerkUserId: userId },
-    });
-
-    if (!user) {
-      throw new Error("User not found");
+    if (!userId) {
+      console.error("No authenticated user found during account creation");
+      throw new Error("Unauthorized");
     }
-
-    // Create account
-    const account = await db.account.create({
-      data: {
-        name: data.name,
-        type: data.type,
-        balance: parseFloat(data.balance),
-        isDefault: data.isDefault,
-        userId: user.id,
-        currency: data.currency || "USD",
-      },
+    
+    console.log("Authenticated userId for account creation:", userId);
+    
+    // Find or create user in our database
+    const dbUser = await safeDbOperation(async () => {
+      // First try to find the user
+      const existingUser = await db.user.findUnique({
+        where: { clerkUserId: userId },
+      });
+      
+      if (existingUser) {
+        console.log("Found existing user for account creation:", existingUser.id);
+        return existingUser;
+      }
+      
+      // If user doesn't exist, create a new one
+      console.log("User not found, creating new user for account creation");
+      const clerkUser = await currentUser();
+      const email = clerkUser?.emailAddresses?.[0]?.emailAddress || "user@example.com";
+      const name = clerkUser?.firstName ? 
+        `${clerkUser.firstName} ${clerkUser.lastName || ''}`.trim() : 
+        "New User";
+      
+      const newUser = await db.user.create({
+        data: {
+          clerkUserId: userId,
+          email,
+          name,
+        },
+      });
+      
+      console.log("Successfully created new user for account creation:", newUser.id);
+      return newUser;
     });
+    
+    if (!dbUser) {
+      console.error("Failed to find or create user during account creation");
+      throw new Error("User not available");
+    }
+    
+    // Create account
+    console.log("Creating new account for user:", dbUser.id);
+    const account = await safeDbOperation(async () => {
+      return db.account.create({
+        data: {
+          name: data.name,
+          type: data.type,
+          balance: parseFloat(data.balance || "0"),
+          isDefault: data.isDefault || false,
+          userId: dbUser.id,
+          currency: data.currency || "USD",
+        },
+      });
+    });
+    
+    console.log("Successfully created account:", account.id);
 
     // If this is the default account, update all other accounts
     if (data.isDefault) {
-      await db.account.updateMany({
-        where: {
-          userId: user.id,
-          id: {
-            not: account.id,
+      console.log("Setting as default account, updating other accounts");
+      await safeDbOperation(async () => {
+        await db.account.updateMany({
+          where: {
+            userId: dbUser.id,
+            id: {
+              not: account.id,
+            },
           },
-        },
-        data: {
-          isDefault: false,
-        },
+          data: {
+            isDefault: false,
+          },
+        });
       });
     }
 
+    console.log("Account creation completed successfully");
     revalidatePath("/dashboard");
-    return { success: true };
+    return { success: true, accountId: account.id };
   } catch (error) {
     console.error("Error creating account:", error);
-    return { error: error.message };
+    // Return a more user-friendly error message
+    return { 
+      success: false, 
+      error: error.message || "Failed to create account. Please try again." 
+    };
   }
 }
 

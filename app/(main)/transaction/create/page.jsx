@@ -8,8 +8,10 @@ export const dynamic = 'force-dynamic';
 
 export default async function AddTransactionPage({ searchParams }) {
   const accounts = await getUserAccounts();
-  // Fix: searchParams is already an object, not a promise, so we don't need to await it
-  const { edit: editId } = searchParams;
+  
+  // In Next.js 15, searchParams needs to be awaited
+  const params = await Promise.resolve(searchParams);
+  const editId = params.edit;
 
   let initialData = null;
   if (editId) {

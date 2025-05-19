@@ -101,74 +101,125 @@ export async function getUserAccounts() {
 export async function createAccount(data) {
   try {
     console.log("Starting account creation with data:", { ...data, balance: data.balance ? 'REDACTED' : undefined });
+    console.log("Environment check:", { 
+      environment: process.env.NODE_ENV,
+      hasDatabaseUrl: !!process.env.DATABASE_URL,
+      hasDirectUrl: !!process.env.DIRECT_URL
+    });
+    
+    // Validate input data
+    if (!data || !data.name || !data.type) {
+      console.error("Invalid account data provided:", { ...data, balance: data.balance ? 'REDACTED' : undefined });
+      return { success: false, error: "Missing required account information" };
+    }
     
     // Get authenticated user ID from Clerk
-    const { userId } = await auth();
+    const authResult = await auth().catch(err => {
+      console.error("Auth error during account creation:", err);
+      return { userId: null, error: err };
+    });
+    
+    const userId = authResult.userId;
     if (!userId) {
       console.error("No authenticated user found during account creation");
-      throw new Error("Unauthorized");
+      return { success: false, error: "Authentication required" };
     }
     
     console.log("Authenticated userId for account creation:", userId);
     
-    // Find or create user in our database
-    const dbUser = await safeDbOperation(async () => {
-      // First try to find the user
-      const existingUser = await db.user.findUnique({
-        where: { clerkUserId: userId },
-      });
-      
-      if (existingUser) {
-        console.log("Found existing user for account creation:", existingUser.id);
-        return existingUser;
-      }
-      
-      // If user doesn't exist, create a new one
-      console.log("User not found, creating new user for account creation");
-      const clerkUser = await currentUser();
-      const email = clerkUser?.emailAddresses?.[0]?.emailAddress || "user@example.com";
-      const name = clerkUser?.firstName ? 
-        `${clerkUser.firstName} ${clerkUser.lastName || ''}`.trim() : 
-        "New User";
-      
-      const newUser = await db.user.create({
-        data: {
-          clerkUserId: userId,
-          email,
-          name,
-        },
-      });
-      
-      console.log("Successfully created new user for account creation:", newUser.id);
-      return newUser;
-    });
+    // Find or create user in our database with multiple retries
+    let dbUser = null;
+    let retryCount = 0;
+    const maxRetries = 3;
     
-    if (!dbUser) {
-      console.error("Failed to find or create user during account creation");
-      throw new Error("User not available");
+    while (!dbUser && retryCount < maxRetries) {
+      try {
+        // First try to find the user
+        const existingUser = await db.user.findUnique({
+          where: { clerkUserId: userId },
+        });
+        
+        if (existingUser) {
+          console.log("Found existing user for account creation:", existingUser.id);
+          dbUser = existingUser;
+          break;
+        }
+        
+        // If user doesn't exist, create a new one
+        console.log("User not found, creating new user for account creation");
+        const clerkUser = await currentUser().catch(err => {
+          console.error("Error fetching Clerk user details:", err);
+          return null;
+        });
+        
+        const email = clerkUser?.emailAddresses?.[0]?.emailAddress || "user@example.com";
+        const name = clerkUser?.firstName ? 
+          `${clerkUser.firstName} ${clerkUser.lastName || ''}`.trim() : 
+          "New User";
+        
+        dbUser = await db.user.create({
+          data: {
+            clerkUserId: userId,
+            email,
+            name,
+          },
+        });
+        
+        console.log("Successfully created new user for account creation:", dbUser.id);
+      } catch (error) {
+        retryCount++;
+        console.error(`Error finding/creating user (attempt ${retryCount}/${maxRetries}):`, error);
+        
+        // Wait before retrying
+        if (retryCount < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+        }
+      }
     }
     
-    // Create account
-    console.log("Creating new account for user:", dbUser.id);
-    const account = await safeDbOperation(async () => {
-      return db.account.create({
-        data: {
-          name: data.name,
-          type: data.type,
-          balance: parseFloat(data.balance || "0"),
-          isDefault: data.isDefault || false,
-          userId: dbUser.id,
-          currency: data.currency || "USD",
-        },
-      });
-    });
+    if (!dbUser) {
+      console.error("Failed to find or create user after multiple attempts");
+      return { success: false, error: "Database operation failed" };
+    }
     
-    console.log("Successfully created account:", account.id);
+    // Create account with retry logic
+    console.log("Creating new account for user:", dbUser.id);
+    let account = null;
+    retryCount = 0;
+    
+    while (!account && retryCount < maxRetries) {
+      try {
+        account = await db.account.create({
+          data: {
+            name: data.name,
+            type: data.type,
+            balance: parseFloat(data.balance || "0"),
+            isDefault: data.isDefault || false,
+            userId: dbUser.id,
+            currency: data.currency || "USD",
+          },
+        });
+        console.log("Successfully created account:", account.id);
+      } catch (error) {
+        retryCount++;
+        console.error(`Error creating account (attempt ${retryCount}/${maxRetries}):`, error);
+        
+        // Wait before retrying
+        if (retryCount < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
+        }
+      }
+    }
+    
+    if (!account) {
+      console.error("Failed to create account after multiple attempts");
+      return { success: false, error: "Failed to create account after multiple attempts" };
+    }
 
     // If this is the default account, update all other accounts
     if (data.isDefault) {
       console.log("Setting as default account, updating other accounts");
-      await safeDbOperation(async () => {
+      try {
         await db.account.updateMany({
           where: {
             userId: dbUser.id,
@@ -180,18 +231,36 @@ export async function createAccount(data) {
             isDefault: false,
           },
         });
-      });
+      } catch (updateError) {
+        // Non-critical error, just log it
+        console.error("Error updating other accounts:", updateError);
+        // Continue execution, this shouldn't prevent account creation
+      }
     }
 
     console.log("Account creation completed successfully");
-    revalidatePath("/dashboard");
-    return { success: true, accountId: account.id };
+    
+    // Revalidate paths
+    try {
+      revalidatePath("/dashboard");
+      revalidatePath("/account");
+    } catch (revalidateError) {
+      console.error("Error revalidating paths:", revalidateError);
+      // Non-critical error, continue
+    }
+    
+    return { 
+      success: true, 
+      accountId: account.id,
+      message: "Account created successfully"
+    };
   } catch (error) {
     console.error("Error creating account:", error);
-    // Return a more user-friendly error message
+    // Return a more user-friendly error message with detailed logging
     return { 
       success: false, 
-      error: error.message || "Failed to create account. Please try again." 
+      error: error.message || "Failed to create account. Please try again.",
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     };
   }
 }

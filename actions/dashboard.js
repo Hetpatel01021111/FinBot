@@ -196,7 +196,7 @@ export async function createAccount(data) {
             balance: parseFloat(data.balance || "0"),
             isDefault: data.isDefault || false,
             userId: dbUser.id,
-            currency: data.currency || "USD",
+            // Remove currency field as it's not in the schema
           },
         });
         console.log("Successfully created account:", account.id);

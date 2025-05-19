@@ -1,9 +1,9 @@
 "use server";
 
 import aj from "@/lib/arcjet";
-import { db } from "@/lib/prisma";
+import { db, safeDbOperation } from "@/lib/prisma";
 import { request } from "@arcjet/next";
-import { auth } from "@clerk/nextjs/server";
+import { auth, currentUser } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 
 const serializeTransaction = (obj) => {
@@ -18,50 +18,83 @@ const serializeTransaction = (obj) => {
 };
 
 export async function getUserAccounts() {
-  const { userId } = await auth();
-  if (!userId) throw new Error("Unauthorized");
-
-  // Try to find the user
-  let user = await db.user.findUnique({
-    where: { clerkUserId: userId },
-  });
-
-  // If user doesn't exist, create a new user
-  if (!user) {
-    try {
-      user = await db.user.create({
+  try {
+    // Get authenticated user ID from Clerk
+    const { userId } = await auth();
+    if (!userId) {
+      console.error("No authenticated user found");
+      throw new Error("Unauthorized");
+    }
+    
+    console.log("Authenticated userId:", userId);
+    
+    // Try to get additional user details from Clerk
+    const clerkUser = await currentUser();
+    console.log("Clerk user details:", clerkUser ? 
+      { id: clerkUser.id, email: clerkUser.emailAddresses?.[0]?.emailAddress } : 
+      "No clerk user details");
+    
+    // Find or create user in our database
+    const dbUser = await safeDbOperation(async () => {
+      // First try to find the user
+      const existingUser = await db.user.findUnique({
+        where: { clerkUserId: userId },
+      });
+      
+      if (existingUser) {
+        console.log("Found existing user:", existingUser.id);
+        return existingUser;
+      }
+      
+      // If user doesn't exist, create a new one
+      console.log("User not found, creating new user");
+      const email = clerkUser?.emailAddresses?.[0]?.emailAddress || "user@example.com";
+      const name = clerkUser?.firstName ? 
+        `${clerkUser.firstName} ${clerkUser.lastName || ''}`.trim() : 
+        "New User";
+      
+      const newUser = await db.user.create({
         data: {
           clerkUserId: userId,
-          email: "user@example.com", // Default email, will be updated later
-          name: "New User", // Default name, will be updated later
+          email,
+          name,
         },
       });
-      console.log("Created new user:", user.id);
-    } catch (error) {
-      console.error("Error creating user:", error);
-      throw new Error("Failed to create user");
+      
+      console.log("Successfully created new user:", newUser.id);
+      return newUser;
+    });
+    
+    if (!dbUser) {
+      console.error("Failed to find or create user");
+      throw new Error("User not available");
     }
-  }
-
-  try {
-    const accounts = await db.account.findMany({
-      where: { userId: user.id },
-      orderBy: { createdAt: "desc" },
-      include: {
-        _count: {
-          select: {
-            transactions: true,
+    
+    // Get user accounts
+    const accounts = await safeDbOperation(async () => {
+      console.log("Fetching accounts for user:", dbUser.id);
+      return db.account.findMany({
+        where: { userId: dbUser.id },
+        orderBy: { createdAt: "desc" },
+        include: {
+          _count: {
+            select: {
+              transactions: true,
+            },
           },
         },
-      },
+      });
     });
-
+    
+    console.log(`Found ${accounts.length} accounts for user ${dbUser.id}`);
+    
     // Serialize accounts before sending to client
     const serializedAccounts = accounts.map(serializeTransaction);
-
     return serializedAccounts;
   } catch (error) {
-    console.error(error.message);
+    console.error("Error in getUserAccounts:", error);
+    // Return empty array instead of throwing to avoid breaking the UI
+    return [];
   }
 }
 
@@ -73,29 +106,7 @@ export async function createAccount(data) {
     // Get request data for ArcJet
     const req = await request();
 
-    // Check rate limit
-    const decision = await aj.protect(req, {
-      userId,
-      requested: 1, // Specify how many tokens to consume
-    });
-
-    if (decision.isDenied()) {
-      if (decision.reason.isRateLimit()) {
-        const { remaining, reset } = decision.reason;
-        console.error({
-          code: "RATE_LIMIT_EXCEEDED",
-          details: {
-            remaining,
-            resetInSeconds: reset,
-          },
-        });
-
-        throw new Error("Too many requests. Please try again later.");
-      }
-
-      throw new Error("Request blocked");
-    }
-
+    // Find user
     const user = await db.user.findUnique({
       where: { clerkUserId: userId },
     });
@@ -104,67 +115,77 @@ export async function createAccount(data) {
       throw new Error("User not found");
     }
 
-    // Convert balance to float before saving
-    const balanceFloat = parseFloat(data.balance);
-    if (isNaN(balanceFloat)) {
-      throw new Error("Invalid balance amount");
-    }
-
-    // Check if this is the user's first account
-    const existingAccounts = await db.account.findMany({
-      where: { userId: user.id },
-    });
-
-    // If it's the first account, make it default regardless of user input
-    // If not, use the user's preference
-    const shouldBeDefault =
-      existingAccounts.length === 0 ? true : data.isDefault;
-
-    // If this account should be default, unset other default accounts
-    if (shouldBeDefault) {
-      await db.account.updateMany({
-        where: { userId: user.id, isDefault: true },
-        data: { isDefault: false },
-      });
-    }
-
-    // Create new account
+    // Create account
     const account = await db.account.create({
       data: {
-        ...data,
-        balance: balanceFloat,
+        name: data.name,
+        type: data.type,
+        balance: parseFloat(data.balance),
+        isDefault: data.isDefault,
         userId: user.id,
-        isDefault: shouldBeDefault, // Override the isDefault based on our logic
+        currency: data.currency || "USD",
       },
     });
 
-    // Serialize the account before returning
-    const serializedAccount = serializeTransaction(account);
+    // If this is the default account, update all other accounts
+    if (data.isDefault) {
+      await db.account.updateMany({
+        where: {
+          userId: user.id,
+          id: {
+            not: account.id,
+          },
+        },
+        data: {
+          isDefault: false,
+        },
+      });
+    }
 
     revalidatePath("/dashboard");
-    return { success: true, data: serializedAccount };
+    return { success: true };
   } catch (error) {
-    throw new Error(error.message);
+    console.error("Error creating account:", error);
+    return { error: error.message };
   }
 }
 
 export async function getDashboardData() {
-  const { userId } = await auth();
-  if (!userId) throw new Error("Unauthorized");
+  try {
+    const { userId } = await auth();
+    if (!userId) throw new Error("Unauthorized");
 
-  const user = await db.user.findUnique({
-    where: { clerkUserId: userId },
-  });
+    // Find user
+    const user = await db.user.findUnique({
+      where: { clerkUserId: userId },
+    });
 
-  if (!user) {
-    throw new Error("User not found");
+    if (!user) {
+      throw new Error("User not found");
+    }
+
+    // Get recent transactions
+    const transactions = await db.transaction.findMany({
+      where: {
+        account: {
+          userId: user.id,
+        },
+      },
+      orderBy: {
+        date: "desc",
+      },
+      take: 5,
+      include: {
+        account: true,
+      },
+    });
+
+    // Serialize transactions
+    const serializedTransactions = transactions.map(serializeTransaction);
+
+    return serializedTransactions;
+  } catch (error) {
+    console.error("Error getting dashboard data:", error);
+    return [];
   }
-
-  // Get all user transactions
-  const transactions = await db.transaction.findMany({
-    where: { userId: user.id },
-    orderBy: { date: "desc" },
-  });
-
-  return transactions.map(serializeTransaction);
 }

@@ -11,6 +11,9 @@ import { DashboardOverview } from "./_components/transaction-overview";
 import FinanceChatbot from "@/components/FinanceChatbot";
 import SeedButton from "@/components/SeedButton";
 
+// Force dynamic rendering for this page
+export const dynamic = 'force-dynamic';
+
 export default async function DashboardPage() {
   const [accounts, transactions] = await Promise.all([
     getUserAccounts(),

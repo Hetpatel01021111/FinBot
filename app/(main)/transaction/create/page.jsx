@@ -8,9 +8,8 @@ export const dynamic = 'force-dynamic';
 
 export default async function AddTransactionPage({ searchParams }) {
   const accounts = await getUserAccounts();
-  // Ensure searchParams is awaited before destructuring
-  const params = await searchParams;
-  const { edit: editId } = params;
+  // Fix: searchParams is already an object, not a promise, so we don't need to await it
+  const { edit: editId } = searchParams;
 
   let initialData = null;
   if (editId) {

@@ -9,22 +9,22 @@ import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
 
 // Initialize OpenAI client with Perplexity API
-// Get API key from environment variables
-const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
-
-// Validate API key
-if (!perplexityApiKey) {
-  console.error("CRITICAL ERROR: Missing PERPLEXITY_API_KEY environment variable");
-}
+// Get API key from environment variables with a fallback dummy key to prevent build errors
+const perplexityApiKey = process.env.PERPLEXITY_API_KEY || "dummy-key-for-build-only";
 
 // Log API key info for debugging (without revealing the actual key)
 console.log("Perplexity API key validation:", {
-  exists: !!perplexityApiKey,
-  length: perplexityApiKey?.length || 0,
-  startsWithPplx: perplexityApiKey?.startsWith('pplx-') || false
+  exists: !!process.env.PERPLEXITY_API_KEY,
+  length: process.env.PERPLEXITY_API_KEY?.length || 0,
+  startsWithPplx: process.env.PERPLEXITY_API_KEY?.startsWith('pplx-') || false,
+  usingDummyKey: !process.env.PERPLEXITY_API_KEY
 });
 
+// Flag to track if we're using a real API key
+const hasRealApiKey = !!process.env.PERPLEXITY_API_KEY;
+
 // Create OpenAI compatible client for Perplexity
+// This will always initialize, preventing build errors
 const perplexity = new OpenAI({
   apiKey: perplexityApiKey,
   baseURL: "https://api.perplexity.ai",
@@ -327,6 +327,18 @@ export async function getUserTransactions(query = {}) {
 export async function scanReceipt(file) {
   try {
     console.log("Starting receipt scan process", { fileType: file.type, fileSize: file.size });
+    
+    // Check if we have a real API key before proceeding
+    if (!hasRealApiKey) {
+      console.error("Cannot scan receipt: Perplexity API key is missing");
+      return {
+        amount: 0,
+        date: new Date(),
+        description: "Receipt scanning unavailable - API key missing",
+        category: "other-expense",
+        merchantName: "Error: API configuration required",
+      };
+    }
     
     // For debugging purposes, log the environment variables (without revealing the actual key)
     console.log("Environment check:", { 

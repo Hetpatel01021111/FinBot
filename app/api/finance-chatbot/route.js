@@ -9,9 +9,6 @@ export async function POST(req) {
     return NextResponse.json({ error: "Gemini API key not set." }, { status: 500 });
   }
 
-  // System prompt to restrict Gemini to financial calculations only
-  const systemPrompt = `You are FinanceBot, an expert in finance and financial calculations. Only answer questions related to finance, money, investments, interest, budgeting, and financial math. If a question is not related to finance or calculations, politely refuse.`;
-
   // --- Calculation Intercept ---
   // Regex to check if message is a pure calculation (numbers, operators, parens, decimals, spaces)
   const calcPattern = /^[0-9+\-*/().%^\s]+$/;
@@ -26,25 +23,34 @@ export async function POST(req) {
   }
   // --- End Calculation Intercept ---
 
-  // Compose the message as in your curl example
-  const combinedMessage = `${systemPrompt}\n\nUser question: ${message}`;
+  // Prepare payload for Gemini API
+  const prompt = `You are FinanceBot, an expert in finance and financial calculations. Only answer questions related to finance, money, investments, interest, budgeting, and financial math. If a question is not related to finance or calculations, politely refuse.\n\nUser question: ${message}`;
+
   const payload = {
     contents: [
       {
         parts: [
-          { text: combinedMessage }
+          {
+            text: prompt
+          }
         ]
       }
-    ]
+    ],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 800
+    }
   };
 
   try {
-    // Use the exact endpoint and payload format as your curl
+    // Use the Gemini API endpoint and format
     const geminiRes = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json"
+        },
         body: JSON.stringify(payload)
       }
     );
@@ -60,20 +66,19 @@ export async function POST(req) {
     if (!geminiRes.ok) {
       return NextResponse.json({ error: data.error?.message || text }, { status: 500 });
     }
-
-    let answer = "Sorry, I couldn't process that.";
-    if (data && data.candidates && data.candidates.length > 0) {
-      const candidate = data.candidates[0];
-      if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
-        answer = candidate.content.parts[0].text;
-      } else if (candidate.error) {
-        answer = `Error from AI: ${candidate.error.message}`;
-      }
-    } else if (data.error) {
-      answer = `API Error: ${data.error.message}`;
+    
+    // Extract the response text from Gemini API response format
+    if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+      return NextResponse.json({ error: "Invalid response from Gemini API" }, { status: 500 });
     }
-
-    return NextResponse.json({ answer });
+    
+    // Get text from all parts that have text
+    const responseText = data.candidates[0].content.parts
+      .filter(part => part.text)
+      .map(part => part.text)
+      .join("\n");
+      
+    return NextResponse.json({ answer: responseText });
   } catch (err) {
     return NextResponse.json({ error: "Failed to contact Gemini API: " + err.message }, { status: 500 });
   }

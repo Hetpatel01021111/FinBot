@@ -6,39 +6,71 @@ import { revalidatePath } from "next/cache";
 import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
 
-// Dynamically import OpenAI to handle potential issues
-let OpenAI;
-let perplexity;
+// Check for Gemini API key
+const geminiApiKey = process.env.GEMINI_API_KEY;
+if (!geminiApiKey) {
+  console.error("Missing GEMINI_API_KEY environment variable");
+}
 
-try {
-  // Using dynamic import to handle potential module resolution issues
-  OpenAI = require('openai').default;
-  
-  // Initialize OpenAI client with Perplexity API
-  const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
-  if (!perplexityApiKey) {
-    console.error("Missing PERPLEXITY_API_KEY environment variable");
-  }
-
-  perplexity = new OpenAI({
-    apiKey: perplexityApiKey || "dummy-key", // Provide a fallback to prevent initialization errors
-    baseURL: "https://api.perplexity.ai"
-  });
-  
-  console.log("Successfully initialized Perplexity API client");
-} catch (error) {
-  console.error("Error initializing OpenAI/Perplexity client:", error);
-  // Create a mock client that logs errors instead of failing
-  perplexity = {
-    chat: {
-      completions: {
-        create: async () => {
-          console.error("Perplexity API client not available");
-          throw new Error("AI service unavailable. Please try again later.");
-        }
-      }
+// Function to call Gemini API
+async function callGeminiApi(prompt, imageBase64, imageType) {
+  try {
+    // Validate API key
+    if (!geminiApiKey) {
+      throw new Error("Gemini API key is not configured");
     }
-  };
+    
+    console.log("Preparing Gemini API request");
+    
+    // Prepare request payload for Gemini
+    const payload = {
+      contents: [
+        {
+          parts: [
+            {
+              text: prompt
+            },
+            {
+              inline_data: {
+                mime_type: imageType,
+                data: imageBase64
+              }
+            }
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 500
+      }
+    };
+    
+    // Call Gemini API
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      }
+    );
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error("Gemini API error:", response.status, errorText);
+      throw new Error(`Gemini API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    console.log("Received response from Gemini API");
+    
+    return data;
+  } catch (error) {
+    console.error("Error calling Gemini API:", error);
+    throw error;
+  }
 }
 
 const serializeAmount = (obj) => ({
@@ -266,8 +298,8 @@ export async function scanReceipt(file) {
     
     // For debugging purposes, log the environment variables (without revealing the actual key)
     console.log("Environment check:", { 
-      hasPerplexityKey: !!process.env.PERPLEXITY_API_KEY,
-      keyLength: process.env.PERPLEXITY_API_KEY ? process.env.PERPLEXITY_API_KEY.length : 0,
+      hasGeminiKey: !!process.env.GEMINI_API_KEY,
+      keyLength: process.env.GEMINI_API_KEY ? process.env.GEMINI_API_KEY.length : 0,
       nodeEnv: process.env.NODE_ENV
     });
     
@@ -280,12 +312,6 @@ export async function scanReceipt(file) {
       merchantName: "Unknown",
     };
     
-    // Check if OpenAI/Perplexity client is available
-    if (!perplexity || !perplexity.chat || !perplexity.chat.completions) {
-      console.error("Perplexity API client not properly initialized");
-      return fallbackResponse;
-    }
-    
     // Convert File to ArrayBuffer
     const arrayBuffer = await file.arrayBuffer();
     // Convert ArrayBuffer to Base64
@@ -293,15 +319,15 @@ export async function scanReceipt(file) {
     console.log("Converted image to base64", { base64Length: base64String.length });
     
     // Fallback approach - if the image is too large or complex, return default values
-    if (file.size > 5000000) { // 5MB limit
+    if (file.size > 10000000) { // 10MB limit (Gemini can handle larger files than Perplexity)
       console.log("File too large, using fallback approach");
       return fallbackResponse;
     }
     
-    // System prompt for receipt analysis - simplified for better reliability
-    const systemPrompt = `You are a receipt analysis assistant. Extract information from receipt images and return ONLY valid JSON.`;
-    
-    const userPrompt = `
+    // Prompt for receipt analysis - simplified for better reliability
+    const prompt = `
+      You are a receipt analysis assistant. Extract information from this receipt image and return ONLY valid JSON.
+      
       Analyze this receipt image and extract:
       - Total amount (number)
       - Date (ISO format)
@@ -315,71 +341,40 @@ export async function scanReceipt(file) {
       If you can't identify the receipt clearly, return: {"amount": 0, "date": "2025-05-19T00:00:00.000Z", "description": "Unknown receipt", "merchantName": "Unknown", "category": "other-expense"}
     `;
 
-    // Create messages for Perplexity API
-    const messages = [
-      {
-        role: "system",
-        content: systemPrompt
-      },
-      {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text: userPrompt
-          },
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:${file.type};base64,${base64String}`
-            }
-          }
-        ]
-      }
-    ];
-
-    console.log("Calling Perplexity API...");
+    console.log("Calling Gemini API...");
     
-    // Call Perplexity API with timeout
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      controller.abort();
-      console.log("Perplexity API call timed out");
-    }, 30000); // 30 second timeout
+    // Set up timeout for Gemini API call
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error("Gemini API call timed out")), 30000); // 30 second timeout
+    });
     
     try {
-      const result = await perplexity.chat.completions.create({
-        model: "sonar-pro",
-        messages: messages,
-        temperature: 0.1, // Lower temperature for more deterministic results
-        max_tokens: 500,  // Limit response size
-      }, { signal: controller.signal }).catch(error => {
-        console.error("Error calling Perplexity API:", error);
-        return null;
-      });
+      // Race between API call and timeout
+      const result = await Promise.race([
+        callGeminiApi(prompt, base64String, file.type),
+        timeoutPromise
+      ]);
       
-      clearTimeout(timeoutId);
+      console.log("Received response from Gemini API");
       
-      // Check if result is null (API call failed)
-      if (!result) {
-        console.log("API call failed, using fallback response");
+      // Check if response has the expected structure
+      if (!result || !result.candidates || !result.candidates[0] || !result.candidates[0].content) {
+        console.error("Invalid response structure from Gemini API", result);
         return fallbackResponse;
       }
       
-      console.log("Received response from Perplexity API");
+      // Extract text from Gemini response
+      const responseText = result.candidates[0].content.parts
+        .filter(part => part.text)
+        .map(part => part.text)
+        .join("\n");
       
-      if (!result.choices || !result.choices[0] || !result.choices[0].message) {
-        console.error("Invalid response structure from API", result);
-        return fallbackResponse;
-      }
-      
-      const responseText = result.choices[0].message.content;
       console.log("Raw API response:", responseText);
       
       // Extract JSON from the response
       const jsonMatch = responseText.match(/\{[\s\S]*\}/); // Match anything between { and }
       if (!jsonMatch) {
-        console.error("No JSON found in response");
+        console.error("No JSON found in Gemini response");
         return fallbackResponse;
       }
       
@@ -396,8 +391,7 @@ export async function scanReceipt(file) {
         category: parsedData.category || "other-expense",
       };
     } catch (apiError) {
-      clearTimeout(timeoutId);
-      console.error("Error processing receipt with API:", apiError);
+      console.error("Error processing receipt with Gemini API:", apiError);
       return fallbackResponse;
     }
   } catch (error) {

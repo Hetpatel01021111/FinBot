@@ -9,7 +9,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Plus } from "lucide-react";
 import { DashboardOverview } from "./_components/transaction-overview";
 import FinanceChatbot from "@/components/FinanceChatbot";
-import SeedButton from "@/components/SeedButton";
 
 // Force dynamic rendering for this page
 export const dynamic = 'force-dynamic';
@@ -57,9 +56,6 @@ export default async function DashboardPage() {
             <AccountCard key={account.id} account={account} />
           ))}
       </div>
-
-      {/* Seed Button (Development Only) */}
-      <SeedButton />
       
       {/* Finance Chatbot (Embedded) */}
       <FinanceChatbot />

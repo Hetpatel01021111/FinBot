@@ -1,26 +1,52 @@
-// Remove "use client" - this is now a Server Component
-
-import { Suspense } from "react";
+// Server Component
 import { getAccountWithTransactions } from "@/actions/account";
-import { BarLoader } from "react-spinners";
-import { TransactionTable } from "../_components/transaction-table";
 import { notFound } from "next/navigation";
-import { AccountChart } from "../_components/account-chart";
 import AccountPageClient from "./account-page-client";
 
-export default async function AccountPage({ params }) {
-  // Get the account ID from params
-  const id = params.id;
-  
-  // Fetch account data on the server
-  const accountData = await getAccountWithTransactions(id);
+// This function ensures all data is properly serialized for client components
+function serializeData(data) {
+  return JSON.parse(JSON.stringify(data));
+}
 
-  if (!accountData) {
+export default async function AccountPage({ params }) {
+  try {
+    // Get the account ID from params
+    const id = params.id;
+    
+    if (!id) {
+      console.error("Missing account ID in params");
+      notFound();
+    }
+    
+    console.log("Fetching account data for ID:", id);
+    
+    // Fetch account data on the server
+    const accountData = await getAccountWithTransactions(id).catch(error => {
+      console.error("Error fetching account data:", error);
+      return null;
+    });
+
+    if (!accountData) {
+      console.error("No account data found for ID:", id);
+      notFound();
+    }
+
+    // Extract and serialize the data to prevent hydration errors
+    const { transactions = [], ...account } = accountData;
+    const serializedAccount = serializeData(account);
+    const serializedTransactions = serializeData(transactions);
+    
+    console.log("Successfully fetched account data");
+    
+    // Return the client component with the serialized data
+    return (
+      <AccountPageClient 
+        account={serializedAccount} 
+        transactions={serializedTransactions} 
+      />
+    );
+  } catch (error) {
+    console.error("Unhandled error in account page:", error);
     notFound();
   }
-
-  const { transactions, ...account } = accountData;
-  
-  // Return the client component with the data
-  return <AccountPageClient account={account} transactions={transactions} />;
 }

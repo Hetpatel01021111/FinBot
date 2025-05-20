@@ -4,24 +4,28 @@ import { jwtVerify } from "jose";
 import OpenAI from "openai";
 
 // Initialize OpenAI client with Perplexity API directly in this file
-// This prevents build errors when the environment variable is missing
-const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
+// Use a dummy key during build time to prevent build errors
+const perplexityApiKey = process.env.PERPLEXITY_API_KEY || "dummy-key-for-build-only";
 
 // Log API key info for debugging (without revealing the actual key)
 console.log("[Receipt Scanner] Perplexity API key validation:", {
-  exists: !!perplexityApiKey,
-  length: perplexityApiKey?.length || 0,
-  startsWithPplx: perplexityApiKey?.startsWith('pplx-') || false
+  exists: !!process.env.PERPLEXITY_API_KEY,
+  length: process.env.PERPLEXITY_API_KEY?.length || 0,
+  startsWithPplx: process.env.PERPLEXITY_API_KEY?.startsWith('pplx-') || false,
+  usingDummyKey: !process.env.PERPLEXITY_API_KEY
 });
 
-// Create OpenAI compatible client for Perplexity if API key exists
-const perplexity = perplexityApiKey ? new OpenAI({
+// Always create the OpenAI client to prevent build errors
+const perplexity = new OpenAI({
   apiKey: perplexityApiKey,
   baseURL: "https://api.perplexity.ai",
   defaultHeaders: {
     "Content-Type": "application/json"
   }
-}) : null;
+});
+
+// Flag to check if we have a real API key at runtime
+const hasRealApiKey = !!process.env.PERPLEXITY_API_KEY;
 
 // Secret key for verifying tokens - must match the one used for generation
 const SECRET_KEY = new TextEncoder().encode(process.env.TOKEN_SECRET || "finbox-receipt-scanner-secret-key");
@@ -130,11 +134,15 @@ async function scanReceiptLocal(file) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
       
+      // Make sure we're using the real API key at runtime
       const result = await perplexity.chat.completions.create({
         model: "sonar-pro-preview",
         messages: messages,
         temperature: 0.1, // Lower temperature for more deterministic results
         max_tokens: 500,  // Limit response size
+        headers: {
+          "Authorization": `Bearer ${process.env.PERPLEXITY_API_KEY}`
+        }
       }, { signal: controller.signal });
       
       clearTimeout(timeoutId);
@@ -233,9 +241,9 @@ export async function POST(req) {
       );
     }
 
-    // Check if Perplexity API is available
-    if (!perplexity) {
-      console.error("Cannot scan receipt: Perplexity API key is missing");
+    // Check if we have a real API key at runtime
+    if (!hasRealApiKey) {
+      console.error("Cannot scan receipt: Perplexity API key is missing at runtime");
       return NextResponse.json({
         success: false,
         error: "Receipt scanning is currently unavailable. Please enter transaction details manually.",

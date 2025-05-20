@@ -9,29 +9,15 @@ import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
 
 // Initialize OpenAI client with Perplexity API
-// Get API key from environment variables with a fallback dummy key to prevent build errors
-const perplexityApiKey = process.env.PERPLEXITY_API_KEY || "dummy-key-for-build-only";
+// Explicitly check for API key to avoid the OPENAI_API_KEY environment variable error
+const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
+if (!perplexityApiKey) {
+  console.error("Missing PERPLEXITY_API_KEY environment variable");
+}
 
-// Log API key info for debugging (without revealing the actual key)
-console.log("Perplexity API key validation:", {
-  exists: !!process.env.PERPLEXITY_API_KEY,
-  length: process.env.PERPLEXITY_API_KEY?.length || 0,
-  startsWithPplx: process.env.PERPLEXITY_API_KEY?.startsWith('pplx-') || false,
-  usingDummyKey: !process.env.PERPLEXITY_API_KEY
-});
-
-// Flag to track if we're using a real API key
-const hasRealApiKey = !!process.env.PERPLEXITY_API_KEY;
-
-// Create OpenAI compatible client for Perplexity
-// This will always initialize, preventing build errors
 const perplexity = new OpenAI({
-  apiKey: perplexityApiKey,
-  baseURL: "https://api.perplexity.ai",
-  defaultQuery: {},
-  defaultHeaders: {
-    "Content-Type": "application/json"
-  }
+  apiKey: perplexityApiKey || "dummy-key", // Provide a fallback to prevent initialization errors
+  baseURL: "https://api.perplexity.ai"
 });
 
 const serializeAmount = (obj) => ({
@@ -328,18 +314,6 @@ export async function scanReceipt(file) {
   try {
     console.log("Starting receipt scan process", { fileType: file.type, fileSize: file.size });
     
-    // Check if we have a real API key before proceeding
-    if (!hasRealApiKey) {
-      console.error("Cannot scan receipt: Perplexity API key is missing");
-      return {
-        amount: 0,
-        date: new Date(),
-        description: "Receipt scanning unavailable - API key missing",
-        category: "other-expense",
-        merchantName: "Error: API configuration required",
-      };
-    }
-    
     // For debugging purposes, log the environment variables (without revealing the actual key)
     console.log("Environment check:", { 
       hasPerplexityKey: !!process.env.PERPLEXITY_API_KEY,
@@ -411,17 +385,8 @@ export async function scanReceipt(file) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
       
-      // Log API request details for debugging
-      console.log("Perplexity API request details:", {
-        model: "sonar-pro",
-        messageCount: messages.length,
-        hasImage: true,
-        imageSize: base64String.length
-      });
-      
-      // Make the API call without additional headers (they're already in the client config)
       const result = await perplexity.chat.completions.create({
-        model: "sonar-pro-preview", // Updated to latest model
+        model: "sonar-pro",
         messages: messages,
         temperature: 0.1, // Lower temperature for more deterministic results
         max_tokens: 500,  // Limit response size
@@ -442,26 +407,26 @@ export async function scanReceipt(file) {
         };
       }
       
-      const responseText = result.choices[0].message.content;
-      console.log("Raw API response:", responseText);
+      const text = result.choices[0].message.content;
+      console.log("Raw API response:", text.substring(0, 100) + "...");
       
-      // Clean up the response text to ensure it's valid JSON
-      let cleanedText = responseText.trim();
-      // Remove markdown code blocks if present
-      if (cleanedText.startsWith("```json")) {
-        cleanedText = cleanedText.replace(/```json\n|```/g, "");
-      } else if (cleanedText.startsWith("```")) {
-        cleanedText = cleanedText.replace(/```\n|```/g, "");
-      }
+      // More robust JSON extraction
+      let jsonMatch = text.match(/\{[\s\S]*\}/); // Match anything that looks like JSON
+      const cleanedText = jsonMatch ? jsonMatch[0] : text.replace(/```(?:json)?\n?/g, "").trim();
       
-      // Parse the JSON response
       try {
         const data = JSON.parse(cleanedText);
         console.log("Successfully parsed JSON response", data);
         
-        // Return the extracted data
+        // Validate the parsed data
+        if (!data.amount && data.amount !== 0) data.amount = 0;
+        if (!data.date) data.date = new Date().toISOString();
+        if (!data.description) data.description = "Unknown purchase";
+        if (!data.merchantName) data.merchantName = "Unknown";
+        if (!data.category) data.category = "other-expense";
+        
         return {
-          amount: data.amount,
+          amount: parseFloat(data.amount),
           date: new Date(data.date),
           description: data.description,
           category: data.category,
@@ -479,28 +444,8 @@ export async function scanReceipt(file) {
         };
       }
     } catch (apiError) {
-      // Handle API errors specifically
-      clearTimeout(timeoutId);
-      console.error("Perplexity API error:", {
-        status: apiError.status,
-        message: apiError.message,
-        type: apiError.type,
-        stack: apiError.stack
-      });
-      
-      // Check for authentication errors
-      if (apiError.status === 401 || apiError.message?.includes('401')) {
-        console.error("Authentication error with Perplexity API - invalid API key");
-        return {
-          amount: 0,
-          date: new Date(),
-          description: "API authentication error",
-          category: "other-expense",
-          merchantName: "Error: Invalid API Key",
-        };
-      }
-      
-      // Return default values for other API errors
+      console.error("API call error:", apiError);
+      // Return default values instead of throwing
       return {
         amount: 0,
         date: new Date(),

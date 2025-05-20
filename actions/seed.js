@@ -71,6 +71,7 @@ export async function seedTransactions() {
         data: {
           id: randomUUID(),
           name: "Default Account",
+          type: "CURRENT", // Add the required account type
           balance: 0,
           color: "#3b82f6",
           isDefault: true,

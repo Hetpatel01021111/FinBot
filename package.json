@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "seed": "node scripts/seed.js",
     "postinstall": "npx prisma generate"
   },
   "dependencies": {
@@ -35,6 +36,7 @@
     "mathjs": "^14.4.0",
     "next": "15.3.1",
     "next-themes": "^0.4.6",
+    "openai": "^4.100.0",
     "react": "^19.0.0",
     "react-day-picker": "^8.10.1",
     "react-dom": "^19.0.0",

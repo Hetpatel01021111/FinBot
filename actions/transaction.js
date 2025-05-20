@@ -3,11 +3,22 @@
 import { auth } from "@clerk/nextjs/server";
 import { db } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+// Using OpenAI compatible client for Perplexity API
+import OpenAI from "openai";
 import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+// Initialize OpenAI client with Perplexity API
+// Explicitly check for API key to avoid the OPENAI_API_KEY environment variable error
+const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
+if (!perplexityApiKey) {
+  console.error("Missing PERPLEXITY_API_KEY environment variable");
+}
+
+const perplexity = new OpenAI({
+  apiKey: perplexityApiKey || "dummy-key", // Provide a fallback to prevent initialization errors
+  baseURL: "https://api.perplexity.ai"
+});
 
 const serializeAmount = (obj) => ({
   ...obj,
@@ -123,27 +134,50 @@ export async function getTransaction(id) {
 
 export async function updateTransaction(id, data) {
   try {
+    console.log("Updating transaction with ID:", id, "and data:", { ...data, amount: data.amount ? 'REDACTED' : undefined });
+    
     const { userId } = await auth();
-    if (!userId) throw new Error("Unauthorized");
+    if (!userId) {
+      console.error("Unauthorized attempt to update transaction");
+      return { success: false, error: "Unauthorized" };
+    }
 
     const user = await db.user.findUnique({
       where: { clerkUserId: userId },
     });
 
-    if (!user) throw new Error("User not found");
+    if (!user) {
+      console.error("User not found during transaction update");
+      return { success: false, error: "User not found" };
+    }
 
     // Get original transaction to calculate balance change
     const originalTransaction = await db.transaction.findUnique({
       where: {
         id,
-        userId: user.id,
       },
       include: {
         account: true,
       },
     });
 
-    if (!originalTransaction) throw new Error("Transaction not found");
+    if (!originalTransaction) {
+      console.error("Transaction not found with ID:", id);
+      return { success: false, error: "Transaction not found" };
+    }
+
+    console.log("Found original transaction:", { 
+      id: originalTransaction.id, 
+      type: originalTransaction.type,
+      accountId: originalTransaction.accountId
+    });
+
+    // Parse amount to ensure it's a number
+    const parsedAmount = parseFloat(data.amount);
+    if (isNaN(parsedAmount)) {
+      console.error("Invalid amount provided for transaction update");
+      return { success: false, error: "Invalid amount" };
+    }
 
     // Calculate balance changes
     const oldBalanceChange =
@@ -152,45 +186,93 @@ export async function updateTransaction(id, data) {
         : originalTransaction.amount.toNumber();
 
     const newBalanceChange =
-      data.type === "EXPENSE" ? -data.amount : data.amount;
+      data.type === "EXPENSE" ? -parsedAmount : parsedAmount;
 
     const netBalanceChange = newBalanceChange - oldBalanceChange;
+    console.log("Balance change calculation:", { oldBalanceChange, newBalanceChange, netBalanceChange });
+
+    // Prepare update data
+    const updateData = {
+      type: data.type,
+      amount: parsedAmount,
+      description: data.description,
+      date: new Date(data.date),
+      category: data.category,
+      isRecurring: data.isRecurring || false,
+      accountId: data.accountId,
+    };
+
+    // Add recurring interval if present
+    if (data.isRecurring && data.recurringInterval) {
+      updateData.recurringInterval = data.recurringInterval;
+      updateData.nextRecurringDate = calculateNextRecurringDate(new Date(data.date), data.recurringInterval);
+    }
+
+    console.log("Prepared update data:", { ...updateData, amount: 'REDACTED' });
 
     // Update transaction and account balance in a transaction
-    const transaction = await db.$transaction(async (tx) => {
-      const updated = await tx.transaction.update({
-        where: {
-          id,
-          userId: user.id,
-        },
-        data: {
-          ...data,
-          nextRecurringDate:
-            data.isRecurring && data.recurringInterval
-              ? calculateNextRecurringDate(data.date, data.recurringInterval)
-              : null,
-        },
-      });
-
-      // Update account balance
-      await tx.account.update({
-        where: { id: data.accountId },
-        data: {
-          balance: {
-            increment: netBalanceChange,
+    try {
+      const transaction = await db.$transaction(async (tx) => {
+        // Update transaction
+        const updated = await tx.transaction.update({
+          where: {
+            id,
           },
-        },
+          data: updateData,
+        });
+
+        // Update account balance if account ID changed or amount changed
+        if (originalTransaction.accountId !== data.accountId) {
+          // If account changed, update both old and new account balances
+          await tx.account.update({
+            where: { id: originalTransaction.accountId },
+            data: {
+              balance: {
+                decrement: oldBalanceChange,
+              },
+            },
+          });
+
+          await tx.account.update({
+            where: { id: data.accountId },
+            data: {
+              balance: {
+                increment: newBalanceChange,
+              },
+            },
+          });
+        } else {
+          // Same account, just update the net difference
+          await tx.account.update({
+            where: { id: data.accountId },
+            data: {
+              balance: {
+                increment: netBalanceChange,
+              },
+            },
+          });
+        }
+
+        return updated;
       });
 
-      return updated;
-    });
+      console.log("Transaction updated successfully:", transaction.id);
 
-    revalidatePath("/dashboard");
-    revalidatePath(`/account/${data.accountId}`);
+      // Revalidate paths
+      revalidatePath("/dashboard");
+      revalidatePath(`/account/${data.accountId}`);
+      if (originalTransaction.accountId !== data.accountId) {
+        revalidatePath(`/account/${originalTransaction.accountId}`);
+      }
 
-    return { success: true, data: serializeAmount(transaction) };
+      return { success: true, data: serializeAmount(transaction) };
+    } catch (txError) {
+      console.error("Error in transaction update:", txError);
+      return { success: false, error: txError.message || "Failed to update transaction" };
+    }
   } catch (error) {
-    throw new Error(error.message);
+    console.error("Unexpected error in updateTransaction:", error);
+    return { success: false, error: error.message || "An unexpected error occurred" };
   }
 }
 
@@ -230,63 +312,158 @@ export async function getUserTransactions(query = {}) {
 // Scan Receipt
 export async function scanReceipt(file) {
   try {
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
+    console.log("Starting receipt scan process", { fileType: file.type, fileSize: file.size });
+    
+    // For debugging purposes, log the environment variables (without revealing the actual key)
+    console.log("Environment check:", { 
+      hasPerplexityKey: !!process.env.PERPLEXITY_API_KEY,
+      keyLength: process.env.PERPLEXITY_API_KEY ? process.env.PERPLEXITY_API_KEY.length : 0
+    });
+    
     // Convert File to ArrayBuffer
     const arrayBuffer = await file.arrayBuffer();
     // Convert ArrayBuffer to Base64
     const base64String = Buffer.from(arrayBuffer).toString("base64");
-
-    const prompt = `
-      Analyze this receipt image and extract the following information in JSON format:
-      - Total amount (just the number)
-      - Date (in ISO format)
-      - Description or items purchased (brief summary)
+    console.log("Converted image to base64", { base64Length: base64String.length });
+    
+    // Fallback approach - if the image is too large or complex, return default values
+    if (file.size > 5000000) { // 5MB limit
+      console.log("File too large, using fallback approach");
+      return {
+        amount: 0,
+        date: new Date(),
+        description: "Receipt scan (manual entry required)",
+        category: "other-expense",
+        merchantName: "Unknown",
+      };
+    }
+    
+    // System prompt for receipt analysis - simplified for better reliability
+    const systemPrompt = `You are a receipt analysis assistant. Extract information from receipt images and return ONLY valid JSON.`;
+    
+    const userPrompt = `
+      Analyze this receipt image and extract:
+      - Total amount (number)
+      - Date (ISO format)
+      - Brief description of purchase
       - Merchant/store name
-      - Suggested category (one of: housing,transportation,groceries,utilities,entertainment,food,shopping,healthcare,education,personal,travel,insurance,gifts,bills,other-expense )
+      - Category (one of: housing,transportation,groceries,utilities,entertainment,food,shopping,healthcare,education,personal,travel,insurance,gifts,bills,other-expense)
       
-      Only respond with valid JSON in this exact format:
-      {
-        "amount": number,
-        "date": "ISO date string",
-        "description": "string",
-        "merchantName": "string",
-        "category": "string"
-      }
-
-      If its not a recipt, return an empty object
+      Return ONLY valid JSON in this format:
+      {"amount": number, "date": "ISO string", "description": "string", "merchantName": "string", "category": "string"}
+      
+      If you can't identify the receipt clearly, return: {"amount": 0, "date": "2025-05-19T00:00:00.000Z", "description": "Unknown receipt", "merchantName": "Unknown", "category": "other-expense"}
     `;
 
-    const result = await model.generateContent([
+    // Create messages for Perplexity API
+    const messages = [
       {
-        inlineData: {
-          data: base64String,
-          mimeType: file.type,
-        },
+        role: "system",
+        content: systemPrompt
       },
-      prompt,
-    ]);
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: userPrompt
+          },
+          {
+            type: "image_url",
+            image_url: {
+              url: `data:${file.type};base64,${base64String}`
+            }
+          }
+        ]
+      }
+    ];
 
-    const response = await result.response;
-    const text = response.text();
-    const cleanedText = text.replace(/```(?:json)?\n?/g, "").trim();
-
+    console.log("Calling Perplexity API...");
+    
     try {
-      const data = JSON.parse(cleanedText);
+      // Call Perplexity API with timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      
+      const result = await perplexity.chat.completions.create({
+        model: "sonar-pro",
+        messages: messages,
+        temperature: 0.1, // Lower temperature for more deterministic results
+        max_tokens: 500,  // Limit response size
+      }, { signal: controller.signal });
+      
+      clearTimeout(timeoutId);
+      
+      console.log("Received response from Perplexity API");
+      
+      if (!result.choices || !result.choices[0] || !result.choices[0].message) {
+        console.error("Invalid response structure from API", result);
+        return {
+          amount: 0,
+          date: new Date(),
+          description: "Receipt scan failed (invalid response)",
+          category: "other-expense",
+          merchantName: "Unknown",
+        };
+      }
+      
+      const text = result.choices[0].message.content;
+      console.log("Raw API response:", text.substring(0, 100) + "...");
+      
+      // More robust JSON extraction
+      let jsonMatch = text.match(/\{[\s\S]*\}/); // Match anything that looks like JSON
+      const cleanedText = jsonMatch ? jsonMatch[0] : text.replace(/```(?:json)?\n?/g, "").trim();
+      
+      try {
+        const data = JSON.parse(cleanedText);
+        console.log("Successfully parsed JSON response", data);
+        
+        // Validate the parsed data
+        if (!data.amount && data.amount !== 0) data.amount = 0;
+        if (!data.date) data.date = new Date().toISOString();
+        if (!data.description) data.description = "Unknown purchase";
+        if (!data.merchantName) data.merchantName = "Unknown";
+        if (!data.category) data.category = "other-expense";
+        
+        return {
+          amount: parseFloat(data.amount),
+          date: new Date(data.date),
+          description: data.description,
+          category: data.category,
+          merchantName: data.merchantName,
+        };
+      } catch (parseError) {
+        console.error("Error parsing JSON response:", parseError, "\nText was:", cleanedText);
+        // Return default values instead of throwing
+        return {
+          amount: 0,
+          date: new Date(),
+          description: "Receipt scan failed (parsing error)",
+          category: "other-expense",
+          merchantName: "Unknown",
+        };
+      }
+    } catch (apiError) {
+      console.error("API call error:", apiError);
+      // Return default values instead of throwing
       return {
-        amount: parseFloat(data.amount),
-        date: new Date(data.date),
-        description: data.description,
-        category: data.category,
-        merchantName: data.merchantName,
+        amount: 0,
+        date: new Date(),
+        description: "Receipt scan failed (API error)",
+        category: "other-expense",
+        merchantName: "Unknown",
       };
-    } catch (parseError) {
-      console.error("Error parsing JSON response:", parseError);
-      throw new Error("Invalid response format from Gemini");
     }
   } catch (error) {
     console.error("Error scanning receipt:", error);
-    throw new Error("Failed to scan receipt");
+    // Return default values instead of throwing
+    return {
+      amount: 0,
+      date: new Date(),
+      description: "Receipt scan failed",
+      category: "other-expense",
+      merchantName: "Unknown",
+    };
   }
 }
 

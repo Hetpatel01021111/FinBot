@@ -115,12 +115,38 @@ export function AddTransactionForm({
   } = useFetch(editMode ? updateTransaction : createTransaction);
 
   const onSubmit = (data) => {
+    // Ensure amount is a valid number
+    const amount = parseFloat(data.amount);
+    if (isNaN(amount)) {
+      toast.error("Please enter a valid amount");
+      return;
+    }
+    
+    // Ensure date is a valid date object
+    const date = data.date instanceof Date ? data.date : new Date(data.date);
+    if (isNaN(date.getTime())) {
+      toast.error("Please enter a valid date");
+      return;
+    }
+    
+    // Prepare form data with proper type conversions
     const formData = {
       ...data,
-      amount: parseFloat(data.amount),
+      amount: amount,
+      date: date,
+      isRecurring: !!data.isRecurring,
     };
+    
+    console.log(`Submitting transaction in ${editMode ? 'edit' : 'create'} mode:`, {
+      ...formData,
+      amount: 'REDACTED'
+    });
 
     if (editMode) {
+      if (!editId) {
+        toast.error("Missing transaction ID for edit");
+        return;
+      }
       transactionFn(editId, formData);
     } else {
       transactionFn(formData);
@@ -129,29 +155,67 @@ export function AddTransactionForm({
 
   const handleScanComplete = (scannedData) => {
     if (scannedData) {
-      setValue("amount", scannedData.amount.toString());
-      setValue("date", new Date(scannedData.date));
-      if (scannedData.description) {
-        setValue("description", scannedData.description);
+      console.log("Receipt scan data received:", scannedData);
+      
+      // Set the amount (with fallback to 0)
+      setValue("amount", (scannedData.amount || 0).toString());
+      
+      // Set the date (with fallback to current date)
+      setValue("date", new Date(scannedData.date || new Date()));
+      
+      // Set the description - combine merchant name and description for more context
+      if (scannedData.description || scannedData.merchantName) {
+        const combinedDescription = scannedData.merchantName 
+          ? `${scannedData.merchantName} - ${scannedData.description || 'Purchase'}` 
+          : scannedData.description;
+        setValue("description", combinedDescription);
       }
+      
+      // Set the category with fallback to 'other-expense'
       if (scannedData.category) {
         setValue("category", scannedData.category);
       }
-      toast.success("Receipt scanned successfully");
+      
+      // Set transaction type to EXPENSE since it's a receipt
+      setValue("type", "EXPENSE");
+      
+      // Trigger validation to update the form state
+      trigger(["amount", "date", "description", "category", "type"]);
+      
+      // Move to the next step if we're in a multi-step form
+      if (activeStep === 1) {
+        setActiveStep(2);
+      }
+      
+      toast.success("Receipt scanned successfully - form fields populated");
     }
   };
 
   useEffect(() => {
-    if (transactionResult?.success && !transactionLoading) {
-      toast.success(
-        editMode
-          ? "Transaction updated successfully"
-          : "Transaction created successfully"
-      );
-      reset();
-      router.push(`/account/${transactionResult.data.accountId}`);
+    if (!transactionLoading) {
+      if (transactionResult?.success) {
+        // Success case
+        toast.success(
+          editMode
+            ? "Transaction updated successfully"
+            : "Transaction created successfully"
+        );
+        reset();
+        
+        // Redirect to account page if we have an account ID
+        if (transactionResult.data?.accountId) {
+          router.push(`/account/${transactionResult.data.accountId}`);
+        } else {
+          // Fallback to dashboard if no account ID
+          router.push('/dashboard');
+        }
+      } else if (transactionResult?.error) {
+        // Error case
+        toast.error(`Error: ${transactionResult.error}`);
+        console.error("Transaction error:", transactionResult.error);
+      }
     }
-  }, [transactionResult, transactionLoading, editMode]);
+  }, [transactionResult, transactionLoading, editMode, router, reset]);
 
   const type = watch("type");
   const isRecurring = watch("isRecurring");

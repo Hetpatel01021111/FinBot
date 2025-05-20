@@ -3,22 +3,43 @@
 import { auth } from "@clerk/nextjs/server";
 import { db } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
-// Using OpenAI compatible client for Perplexity API
-import OpenAI from "openai";
 import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
 
-// Initialize OpenAI client with Perplexity API
-// Explicitly check for API key to avoid the OPENAI_API_KEY environment variable error
-const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
-if (!perplexityApiKey) {
-  console.error("Missing PERPLEXITY_API_KEY environment variable");
-}
+// Dynamically import OpenAI to handle potential issues
+let OpenAI;
+let perplexity;
 
-const perplexity = new OpenAI({
-  apiKey: perplexityApiKey || "dummy-key", // Provide a fallback to prevent initialization errors
-  baseURL: "https://api.perplexity.ai"
-});
+try {
+  // Using dynamic import to handle potential module resolution issues
+  OpenAI = require('openai').default;
+  
+  // Initialize OpenAI client with Perplexity API
+  const perplexityApiKey = process.env.PERPLEXITY_API_KEY;
+  if (!perplexityApiKey) {
+    console.error("Missing PERPLEXITY_API_KEY environment variable");
+  }
+
+  perplexity = new OpenAI({
+    apiKey: perplexityApiKey || "dummy-key", // Provide a fallback to prevent initialization errors
+    baseURL: "https://api.perplexity.ai"
+  });
+  
+  console.log("Successfully initialized Perplexity API client");
+} catch (error) {
+  console.error("Error initializing OpenAI/Perplexity client:", error);
+  // Create a mock client that logs errors instead of failing
+  perplexity = {
+    chat: {
+      completions: {
+        create: async () => {
+          console.error("Perplexity API client not available");
+          throw new Error("AI service unavailable. Please try again later.");
+        }
+      }
+    }
+  };
+}
 
 const serializeAmount = (obj) => ({
   ...obj,
@@ -134,50 +155,27 @@ export async function getTransaction(id) {
 
 export async function updateTransaction(id, data) {
   try {
-    console.log("Updating transaction with ID:", id, "and data:", { ...data, amount: data.amount ? 'REDACTED' : undefined });
-    
     const { userId } = await auth();
-    if (!userId) {
-      console.error("Unauthorized attempt to update transaction");
-      return { success: false, error: "Unauthorized" };
-    }
+    if (!userId) throw new Error("Unauthorized");
 
     const user = await db.user.findUnique({
       where: { clerkUserId: userId },
     });
 
-    if (!user) {
-      console.error("User not found during transaction update");
-      return { success: false, error: "User not found" };
-    }
+    if (!user) throw new Error("User not found");
 
     // Get original transaction to calculate balance change
     const originalTransaction = await db.transaction.findUnique({
       where: {
         id,
+        userId: user.id,
       },
       include: {
         account: true,
       },
     });
 
-    if (!originalTransaction) {
-      console.error("Transaction not found with ID:", id);
-      return { success: false, error: "Transaction not found" };
-    }
-
-    console.log("Found original transaction:", { 
-      id: originalTransaction.id, 
-      type: originalTransaction.type,
-      accountId: originalTransaction.accountId
-    });
-
-    // Parse amount to ensure it's a number
-    const parsedAmount = parseFloat(data.amount);
-    if (isNaN(parsedAmount)) {
-      console.error("Invalid amount provided for transaction update");
-      return { success: false, error: "Invalid amount" };
-    }
+    if (!originalTransaction) throw new Error("Transaction not found");
 
     // Calculate balance changes
     const oldBalanceChange =
@@ -186,93 +184,45 @@ export async function updateTransaction(id, data) {
         : originalTransaction.amount.toNumber();
 
     const newBalanceChange =
-      data.type === "EXPENSE" ? -parsedAmount : parsedAmount;
+      data.type === "EXPENSE" ? -data.amount : data.amount;
 
     const netBalanceChange = newBalanceChange - oldBalanceChange;
-    console.log("Balance change calculation:", { oldBalanceChange, newBalanceChange, netBalanceChange });
-
-    // Prepare update data
-    const updateData = {
-      type: data.type,
-      amount: parsedAmount,
-      description: data.description,
-      date: new Date(data.date),
-      category: data.category,
-      isRecurring: data.isRecurring || false,
-      accountId: data.accountId,
-    };
-
-    // Add recurring interval if present
-    if (data.isRecurring && data.recurringInterval) {
-      updateData.recurringInterval = data.recurringInterval;
-      updateData.nextRecurringDate = calculateNextRecurringDate(new Date(data.date), data.recurringInterval);
-    }
-
-    console.log("Prepared update data:", { ...updateData, amount: 'REDACTED' });
 
     // Update transaction and account balance in a transaction
-    try {
-      const transaction = await db.$transaction(async (tx) => {
-        // Update transaction
-        const updated = await tx.transaction.update({
-          where: {
-            id,
-          },
-          data: updateData,
-        });
-
-        // Update account balance if account ID changed or amount changed
-        if (originalTransaction.accountId !== data.accountId) {
-          // If account changed, update both old and new account balances
-          await tx.account.update({
-            where: { id: originalTransaction.accountId },
-            data: {
-              balance: {
-                decrement: oldBalanceChange,
-              },
-            },
-          });
-
-          await tx.account.update({
-            where: { id: data.accountId },
-            data: {
-              balance: {
-                increment: newBalanceChange,
-              },
-            },
-          });
-        } else {
-          // Same account, just update the net difference
-          await tx.account.update({
-            where: { id: data.accountId },
-            data: {
-              balance: {
-                increment: netBalanceChange,
-              },
-            },
-          });
-        }
-
-        return updated;
+    const transaction = await db.$transaction(async (tx) => {
+      const updated = await tx.transaction.update({
+        where: {
+          id,
+          userId: user.id,
+        },
+        data: {
+          ...data,
+          nextRecurringDate:
+            data.isRecurring && data.recurringInterval
+              ? calculateNextRecurringDate(data.date, data.recurringInterval)
+              : null,
+        },
       });
 
-      console.log("Transaction updated successfully:", transaction.id);
+      // Update account balance
+      await tx.account.update({
+        where: { id: data.accountId },
+        data: {
+          balance: {
+            increment: netBalanceChange,
+          },
+        },
+      });
 
-      // Revalidate paths
-      revalidatePath("/dashboard");
-      revalidatePath(`/account/${data.accountId}`);
-      if (originalTransaction.accountId !== data.accountId) {
-        revalidatePath(`/account/${originalTransaction.accountId}`);
-      }
+      return updated;
+    });
 
-      return { success: true, data: serializeAmount(transaction) };
-    } catch (txError) {
-      console.error("Error in transaction update:", txError);
-      return { success: false, error: txError.message || "Failed to update transaction" };
-    }
+    revalidatePath("/dashboard");
+    revalidatePath(`/account/${data.accountId}`);
+
+    return { success: true, data: serializeAmount(transaction) };
   } catch (error) {
-    console.error("Unexpected error in updateTransaction:", error);
-    return { success: false, error: error.message || "An unexpected error occurred" };
+    throw new Error(error.message);
   }
 }
 
@@ -317,8 +267,24 @@ export async function scanReceipt(file) {
     // For debugging purposes, log the environment variables (without revealing the actual key)
     console.log("Environment check:", { 
       hasPerplexityKey: !!process.env.PERPLEXITY_API_KEY,
-      keyLength: process.env.PERPLEXITY_API_KEY ? process.env.PERPLEXITY_API_KEY.length : 0
+      keyLength: process.env.PERPLEXITY_API_KEY ? process.env.PERPLEXITY_API_KEY.length : 0,
+      nodeEnv: process.env.NODE_ENV
     });
+    
+    // Default/fallback values in case of failure
+    const fallbackResponse = {
+      amount: 0,
+      date: new Date(),
+      description: "Receipt scan (manual entry required)",
+      category: "other-expense",
+      merchantName: "Unknown",
+    };
+    
+    // Check if OpenAI/Perplexity client is available
+    if (!perplexity || !perplexity.chat || !perplexity.chat.completions) {
+      console.error("Perplexity API client not properly initialized");
+      return fallbackResponse;
+    }
     
     // Convert File to ArrayBuffer
     const arrayBuffer = await file.arrayBuffer();
@@ -329,13 +295,7 @@ export async function scanReceipt(file) {
     // Fallback approach - if the image is too large or complex, return default values
     if (file.size > 5000000) { // 5MB limit
       console.log("File too large, using fallback approach");
-      return {
-        amount: 0,
-        date: new Date(),
-        description: "Receipt scan (manual entry required)",
-        category: "other-expense",
-        merchantName: "Unknown",
-      };
+      return fallbackResponse;
     }
     
     // System prompt for receipt analysis - simplified for better reliability
@@ -380,83 +340,68 @@ export async function scanReceipt(file) {
 
     console.log("Calling Perplexity API...");
     
+    // Call Perplexity API with timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+      console.log("Perplexity API call timed out");
+    }, 30000); // 30 second timeout
+    
     try {
-      // Call Perplexity API with timeout
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
-      
       const result = await perplexity.chat.completions.create({
         model: "sonar-pro",
         messages: messages,
         temperature: 0.1, // Lower temperature for more deterministic results
         max_tokens: 500,  // Limit response size
-      }, { signal: controller.signal });
+      }, { signal: controller.signal }).catch(error => {
+        console.error("Error calling Perplexity API:", error);
+        return null;
+      });
       
       clearTimeout(timeoutId);
+      
+      // Check if result is null (API call failed)
+      if (!result) {
+        console.log("API call failed, using fallback response");
+        return fallbackResponse;
+      }
       
       console.log("Received response from Perplexity API");
       
       if (!result.choices || !result.choices[0] || !result.choices[0].message) {
         console.error("Invalid response structure from API", result);
-        return {
-          amount: 0,
-          date: new Date(),
-          description: "Receipt scan failed (invalid response)",
-          category: "other-expense",
-          merchantName: "Unknown",
-        };
+        return fallbackResponse;
       }
       
-      const text = result.choices[0].message.content;
-      console.log("Raw API response:", text.substring(0, 100) + "...");
+      const responseText = result.choices[0].message.content;
+      console.log("Raw API response:", responseText);
       
-      // More robust JSON extraction
-      let jsonMatch = text.match(/\{[\s\S]*\}/); // Match anything that looks like JSON
-      const cleanedText = jsonMatch ? jsonMatch[0] : text.replace(/```(?:json)?\n?/g, "").trim();
-      
-      try {
-        const data = JSON.parse(cleanedText);
-        console.log("Successfully parsed JSON response", data);
-        
-        // Validate the parsed data
-        if (!data.amount && data.amount !== 0) data.amount = 0;
-        if (!data.date) data.date = new Date().toISOString();
-        if (!data.description) data.description = "Unknown purchase";
-        if (!data.merchantName) data.merchantName = "Unknown";
-        if (!data.category) data.category = "other-expense";
-        
-        return {
-          amount: parseFloat(data.amount),
-          date: new Date(data.date),
-          description: data.description,
-          category: data.category,
-          merchantName: data.merchantName,
-        };
-      } catch (parseError) {
-        console.error("Error parsing JSON response:", parseError, "\nText was:", cleanedText);
-        // Return default values instead of throwing
-        return {
-          amount: 0,
-          date: new Date(),
-          description: "Receipt scan failed (parsing error)",
-          category: "other-expense",
-          merchantName: "Unknown",
-        };
+      // Extract JSON from the response
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/); // Match anything between { and }
+      if (!jsonMatch) {
+        console.error("No JSON found in response");
+        return fallbackResponse;
       }
-    } catch (apiError) {
-      console.error("API call error:", apiError);
-      // Return default values instead of throwing
+      
+      const jsonString = jsonMatch[0];
+      const parsedData = JSON.parse(jsonString);
+      console.log("Successfully parsed JSON response", parsedData);
+      
+      // Validate and format the data
       return {
-        amount: 0,
-        date: new Date(),
-        description: "Receipt scan failed (API error)",
-        category: "other-expense",
-        merchantName: "Unknown",
+        amount: typeof parsedData.amount === 'number' ? parsedData.amount : 0,
+        date: parsedData.date ? new Date(parsedData.date) : new Date(),
+        description: parsedData.description || "Unknown purchase",
+        merchantName: parsedData.merchantName || "Unknown",
+        category: parsedData.category || "other-expense",
       };
+    } catch (apiError) {
+      clearTimeout(timeoutId);
+      console.error("Error processing receipt with API:", apiError);
+      return fallbackResponse;
     }
   } catch (error) {
     console.error("Error scanning receipt:", error);
-    // Return default values instead of throwing
     return {
       amount: 0,
       date: new Date(),

@@ -73,7 +73,7 @@ FinBox is a next-generation personal finance management tool that empowers users
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/finbox.git
+git clone [https://github.com/yourusername/finbox.gi](https://github.com/Hetpatel01021111/_FinBox_)
 cd finbox
 
 # Install dependencies

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getAuth } from 'firebase-admin/auth';
-import { firebaseAdmin } from '@/lib/firebase-admin';
+import '@/lib/firebase-admin';
 
 export async function POST(request) {
   try {
@@ -14,7 +14,7 @@ export async function POST(request) {
     }
 
     // Create a custom token for the user
-    const token = await firebaseAdmin.auth.createCustomToken(userId);
+    const token = await getAuth().createCustomToken(userId);
     
     return NextResponse.json({ token });
     

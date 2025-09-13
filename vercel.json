@@ -1,12 +1,6 @@
 {
   "version": 2,
-  "functions": {
-    "app/api/**/*.js": {
-      "runtime": "nodejs18.x",
-      "maxDuration": 30,
-      "memory": 1024
-    }
-  },
+  
   "regions": ["iad1"],
   "env": {
     "NODE_ENV": "production",

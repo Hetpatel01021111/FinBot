@@ -1,13 +1,12 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
-// Define protected routes that require authentication
+// Define protected routes that require authentication (paths only; no regex lookaheads)
 const isProtectedRoute = createRouteMatcher([
   "/dashboard(.*)",
   "/account(.*)",
   "/transaction(.*)",
-  "/settings(.*)",
-  "/api/(?!auth).*" // Protect all API routes except auth
+  "/settings(.*)"
 ]);
 
 // Define public routes that don't require authentication

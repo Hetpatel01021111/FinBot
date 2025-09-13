@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
-import { getAuth } from 'firebase-admin/auth';
-import '@/lib/firebase-admin';
+
+export const dynamic = 'force-dynamic';
+
+async function generateToken(userId) {
+  // Dynamic import to prevent build-time initialization
+  const { getAdminAuth } = await import('@/lib/firebase-admin');
+  return await getAdminAuth().createCustomToken(userId);
+}
 
 export async function POST(request) {
   try {
@@ -13,8 +19,7 @@ export async function POST(request) {
       );
     }
 
-    // Create a custom token for the user
-    const token = await getAuth().createCustomToken(userId);
+    const token = await generateToken(userId);
     
     return NextResponse.json({ token });
     

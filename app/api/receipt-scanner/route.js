@@ -1,6 +1,17 @@
 import { NextResponse } from "next/server";
-import { scanReceipt } from "@/actions/transaction";
 import { jwtVerify } from "jose";
+import { getAdminFirestore } from "@/lib/firebase-admin";
+
+// Don't initialize Firestore at the module level to avoid initialization issues during build
+let db;
+
+// Lazy initialization function for Firestore
+function getDb() {
+  if (!db) {
+    db = getAdminFirestore();
+  }
+  return db;
+}
 
 // Secret key for verifying tokens - must match the one used for generation
 const SECRET_KEY = new TextEncoder().encode(process.env.TOKEN_SECRET || "finbox-receipt-scanner-secret-key");
@@ -39,8 +50,8 @@ async function verifyToken(req) {
 export async function POST(req) {
   try {
     // Verify the token
-    const { valid, user, error } = await verifyToken(req);
-    if (!valid) {
+    const { valid, userId, error } = await verifyToken(req);
+    if (!valid || !userId) {
       return NextResponse.json(
         { error: error || "Unauthorized" },
         { status: 401 }
@@ -49,51 +60,64 @@ export async function POST(req) {
 
     // Get the form data
     const formData = await req.formData();
-    const file = formData.get("receipt");
-    
+    const file = formData.get("file");
+
     if (!file) {
       return NextResponse.json(
-        { error: "No receipt file provided" },
+        { error: "No file provided" },
         { status: 400 }
       );
     }
 
-    // Scan the receipt
+    // Dynamically import the scanReceipt function to avoid Firebase initialization issues
+    const { scanReceipt } = await import('@/actions/transaction');
+    
+    // Process the receipt
     const result = await scanReceipt(file);
-
-    return NextResponse.json({
-      success: true,
-      data: result
+    
+    // Log the scan result for debugging
+    const db = getDb();
+    await db.collection("receiptScans").add({
+      userId,
+      result,
+      timestamp: new Date(),
+      status: "completed"
     });
+    
+    return NextResponse.json(result);
   } catch (error) {
-    console.error("Receipt scanner API error:", error);
+    console.error("Error processing receipt:", error);
+    
+    // Log the error to Firestore for debugging
+    try {
+      const { userId } = await verifyToken(req);
+      if (userId) {
+        const db = getDb();
+        await db.collection("receiptScanErrors").add({
+          userId,
+          error: error.message,
+          timestamp: new Date(),
+          status: "error"
+        });
+      }
+    } catch (e) {
+      console.error("Failed to log error:", e);
+    }
+    
     return NextResponse.json(
-      { error: error.message || "Failed to scan receipt" },
+      { 
+        error: "Failed to process receipt",
+        details: process.env.NODE_ENV === 'development' ? error.message : undefined
+      },
       { status: 500 }
     );
   }
 }
 
 // Special endpoint for token validation - just returns success if token is valid
-export async function GET(req) {
-  try {
-    const { valid, error } = await verifyToken(req);
-    
-    if (!valid) {
-      return NextResponse.json(
-        { error: error || "Invalid token" },
-        { status: 401 }
-      );
-    }
-
-    return NextResponse.json({
-      success: true,
-      message: "Token is valid"
-    });
-  } catch (error) {
-    return NextResponse.json(
-      { error: "Authentication failed" },
-      { status: 401 }
-    );
-  }
+export async function GET() {
+  return NextResponse.json({ 
+    status: "ok",
+    timestamp: new Date().toISOString() 
+  });
 }

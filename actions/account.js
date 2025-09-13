@@ -4,7 +4,14 @@ import { getAdminFirestore } from "@/lib/firebase-admin";
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 
-const db = getAdminFirestore();
+// Lazy initialization of Firestore
+let db;
+function getDb() {
+  if (!db) {
+    db = getAdminFirestore();
+  }
+  return db;
+}
 
 // Serializer to handle Firestore Timestamps and other complex objects
 const serializeDecimal = (obj) => {
@@ -37,6 +44,7 @@ export async function getAccountWithTransactions(accountId) {
   if (!userId) throw new Error("Unauthorized");
 
   // Get account
+  const db = getDb();
   const accountRef = db.collection("users").doc(userId).collection("accounts").doc(accountId);
   const accountSnap = await accountRef.get();
   if (!accountSnap.exists) return null;

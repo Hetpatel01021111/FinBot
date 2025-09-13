@@ -6,7 +6,14 @@ import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
 import { getAdminFirestore } from "@/lib/firebase-admin";
 
-const db = getAdminFirestore();
+// Lazy initialization of Firestore
+let db;
+function getDb() {
+  if (!db) {
+    db = getAdminFirestore();
+  }
+  return db;
+}
 
 // Check for Gemini API key
 const geminiApiKey = process.env.GEMINI_API_KEY;
@@ -162,16 +169,22 @@ export async function getTransaction(id) {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorized");
 
-  // Find transaction by scanning accounts
-  const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
-  for (const acc of accountsSnap.docs) {
-    const txRef = firestore.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
-    const txSnap = await txRef.get();
-    if (txSnap.exists) {
-      return { id: txSnap.id, ...txSnap.data() };
+  try {
+    const db = getDb();
+    const transactionsRef = db.collection("users").doc(userId).collection("transactions");
+
+    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
+    for (const acc of accountsSnap.docs) {
+      const txRef = db.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
+      const txSnap = await txRef.get();
+      if (txSnap.exists) {
+        return { id: txSnap.id, ...txSnap.data() };
+      }
     }
+    throw new Error("Transaction not found");
+  } catch (error) {
+    throw new Error(error.message);
   }
-  throw new Error("Transaction not found");
 }
 
 export async function updateTransaction(id, data) {
@@ -182,7 +195,8 @@ export async function updateTransaction(id, data) {
     // Find original transaction and its account
     let original = null;
     let origAccountId = null;
-    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    const db = getDb();
+    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
     for (const acc of accountsSnap.docs) {
       const txRef = db.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
       const txSnap = await txRef.get();
@@ -207,7 +221,7 @@ export async function updateTransaction(id, data) {
     // Update transaction and account balance in a batch
     const accountRef = db.collection("users").doc(userId).collection("accounts").doc(data.accountId || origAccountId);
     const txRef = accountRef.collection("transactions").doc(id);
-    const batch = firestore.batch();
+    const batch = db.batch();
     const nextRecurringDate =
       data.isRecurring && data.recurringInterval
         ? calculateNextRecurringDate(data.date, data.recurringInterval)
@@ -242,13 +256,28 @@ export async function getUserTransactions(query = {}) {
     const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    // Gather all transactions across user's accounts
-    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    const db = getDb();
+    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
     const all = [];
+    
     for (const acc of accountsSnap.docs) {
-      const txSnap = await db.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").get();
-      txSnap.forEach((d) => all.push({ id: d.id, ...d.data(), account: { id: acc.id, ...acc.data() } }));
+      const txSnap = await db.collection("users")
+        .doc(userId)
+        .collection("accounts")
+        .doc(acc.id)
+        .collection("transactions")
+        .get();
+        
+      txSnap.forEach((d) => all.push({ 
+        id: d.id, 
+        ...d.data(), 
+        account: { 
+          id: acc.id, 
+          ...acc.data() 
+        } 
+      }));
     }
+    
     // Apply basic filtering provided in query if fields align
     const filtered = all
       .filter((t) => (query.type ? t.type === query.type : true))

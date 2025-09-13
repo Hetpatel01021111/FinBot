@@ -6,7 +6,14 @@ import { auth, currentUser } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 import { getAdminFirestore } from "@/lib/firebase-admin";
 
-const db = getAdminFirestore();
+// Lazy initialization of Firestore
+let db;
+function getDb() {
+  if (!db) {
+    db = getAdminFirestore();
+  }
+  return db;
+}
 
 const serializeTransaction = (obj) => {
   const serialized = { ...obj };
@@ -48,11 +55,18 @@ export async function getUserAccounts() {
     const clerkUser = await currentUser();
     console.log("Clerk user details:", clerkUser ? 
       { id: clerkUser.id, email: clerkUser.emailAddresses?.[0]?.emailAddress } : 
-      "No clerk user details");
+      'No user details available');
+
+    // Get user's accounts from Firestore
+    const db = getDb();
+    const accountsRef = db.collection("users").doc(userId).collection("accounts");
+    const snapshot = await accountsRef.get();
     
-    // Get user accounts from Firestore
-    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
-    const accounts = accountsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    if (snapshot.empty) {
+      console.log("No accounts found for user");
+      return [];
+    }
+    const accounts = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
     console.log(`Found ${accounts.length} accounts for user ${userId}`);
     
     // Serialize accounts before sending to client
@@ -103,7 +117,7 @@ export async function createAccount(data) {
     };
     console.log("Attempting to write to Firestore with payload:", accountPayload);
     
-    // Create account doc in Firestore
+    const db = getDb();
     const accountsRef = db.collection("users").doc(userId).collection("accounts");
     const newAccountRef = accountsRef.doc();
     await newAccountRef.set(accountPayload);
@@ -160,6 +174,7 @@ export async function getDashboardData() {
     const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
+    const db = getDb();
     // Get recent transactions
     const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
     const all = [];

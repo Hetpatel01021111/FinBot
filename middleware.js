@@ -1,26 +1,28 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
-// Define protected routes that require authentication
-const protectedRoutes = [
+// Define protected routes that require authentication (paths only; no regex lookaheads)
+const isProtectedRoute = createRouteMatcher([
   "/dashboard(.*)",
   "/account(.*)",
   "/transaction(.*)",
   "/settings(.*)"
-];
-
-// Create a matcher for protected routes
-const isProtectedRoute = createRouteMatcher(protectedRoutes);
+]);
 
 // Define public routes that don't require authentication
-const publicRoutes = [
-  "/",
-  "/sign-in(.*)",
-  "/sign-up(.*)",
-  "/api/trpc(.*)",
-  "/_next(.*)",
-  "/api/webhooks(.*)"
-];
+const isPublicRoute = (pathname) => {
+  const publicPaths = [
+    "/",
+    "/sign-in(.*)",
+    "/sign-up(.*)",
+    "/api/auth(.*)",
+    "/_next(.*)",
+    "/(api|trpc)(.*)"
+  ];
+  return publicPaths.some(
+    (path) => path === pathname || new RegExp(`^${path.replace('*', '.*')}$`).test(pathname)
+  );
+};
 
 // CORS headers for API routes
 const corsHeaders = {
@@ -43,10 +45,7 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   // Skip middleware for public routes
-  if (publicRoutes.some(route => {
-    const regex = new RegExp(`^${route.replace(/\*/g, '.*')}$`);
-    return regex.test(pathname);
-  })) {
+  if (isPublicRoute(pathname)) {
     const response = NextResponse.next();
     // Add CORS headers to public API responses
     if (pathname.startsWith('/api/')) {

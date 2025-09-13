@@ -1,26 +1,16 @@
 "use server";
 
-import { getAdminFirestore } from "@/lib/firebase-admin";
-import { getAuth } from "@/lib/auth";
+import { db as firestore } from "@/lib/firebase";
+import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
-
-// Lazy initialization of Firestore
-let db;
-function getDb() {
-  if (!db) {
-    db = getAdminFirestore();
-  }
-  return db;
-}
 
 export async function getCurrentBudget(accountId) {
   try {
-    const { userId } = await getAuth();
+    const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    const db = getDb();
     // Read budget doc (single current budget per user)
-    const budgetRef = db.collection("users").doc(userId).collection("budgets").doc("current");
+    const budgetRef = firestore.collection("users").doc(userId).collection("budgets").doc("current");
     const budgetSnap = await budgetRef.get();
     const budget = budgetSnap.exists ? { id: budgetSnap.id, ...budgetSnap.data() } : null;
 
@@ -38,12 +28,7 @@ export async function getCurrentBudget(accountId) {
     );
 
     // Fetch all transactions under the account and aggregate in JS
-    const txSnap = await db.collection("users")
-      .doc(userId)
-      .collection("accounts")
-      .doc(accountId)
-      .collection("transactions")
-      .get();
+    const txSnap = await firestore.collection("users").doc(userId).collection("accounts").doc(accountId).collection("transactions").get();
     let sum = 0;
     txSnap.forEach((d) => {
       const t = d.data();
@@ -95,12 +80,11 @@ export async function getCurrentBudget(accountId) {
 
 export async function updateBudget(amount) {
   try {
-    const { userId } = await getAuth();
+    const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    const db = getDb();
-    // Update or create the budget
-    const budgetRef = db.collection("users").doc(userId).collection("budgets").doc("current");
+    // Upsert current budget doc
+    const budgetRef = firestore.collection("users").doc(userId).collection("budgets").doc("current");
     await budgetRef.set(
       {
         amount: Number(amount),

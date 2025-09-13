@@ -2,18 +2,9 @@
 
 import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
-import { getAuth } from "@/lib/auth";
+import { auth, currentUser } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
-import { getAdminFirestore } from "@/lib/firebase-admin";
-
-// Lazy initialization of Firestore
-let db;
-function getDb() {
-  if (!db) {
-    db = getAdminFirestore();
-  }
-  return db;
-}
+import { db as firestore } from "@/lib/firebase";
 
 const serializeTransaction = (obj) => {
   const serialized = { ...obj };
@@ -55,18 +46,11 @@ export async function getUserAccounts() {
     const clerkUser = await currentUser();
     console.log("Clerk user details:", clerkUser ? 
       { id: clerkUser.id, email: clerkUser.emailAddresses?.[0]?.emailAddress } : 
-      'No user details available');
-
-    // Get user's accounts from Firestore
-    const db = getDb();
-    const accountsRef = db.collection("users").doc(userId).collection("accounts");
-    const snapshot = await accountsRef.get();
+      "No clerk user details");
     
-    if (snapshot.empty) {
-      console.log("No accounts found for user");
-      return [];
-    }
-    const accounts = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+    // Get user accounts from Firestore
+    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    const accounts = accountsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     console.log(`Found ${accounts.length} accounts for user ${userId}`);
     
     // Serialize accounts before sending to client
@@ -117,8 +101,8 @@ export async function createAccount(data) {
     };
     console.log("Attempting to write to Firestore with payload:", accountPayload);
     
-    const db = getDb();
-    const accountsRef = db.collection("users").doc(userId).collection("accounts");
+    // Create account doc in Firestore
+    const accountsRef = firestore.collection("users").doc(userId).collection("accounts");
     const newAccountRef = accountsRef.doc();
     await newAccountRef.set(accountPayload);
     console.log(`Successfully wrote to Firestore for document ID: ${newAccountRef.id}`);
@@ -128,7 +112,7 @@ export async function createAccount(data) {
       console.log("Setting as default account, updating other accounts");
       try {
         const accountsSnap = await accountsRef.get();
-        const batch = db.batch();
+        const batch = firestore.batch();
         accountsSnap.forEach(doc => {
           if (doc.id !== newAccountRef.id && doc.data().isDefault) {
             batch.update(doc.ref, { isDefault: false });
@@ -171,12 +155,11 @@ export async function createAccount(data) {
 
 export async function getDashboardData() {
   try {
-    const { userId } = await getAuth();
+    const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    const db = getDb();
     // Get recent transactions
-    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
+    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
     const all = [];
     for (const acc of accountsSnap.docs) {
       const txSnap = await acc.ref.collection("transactions").get();

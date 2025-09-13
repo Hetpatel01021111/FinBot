@@ -2,17 +2,9 @@
 
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
-import { getAdminFirestore } from "@/lib/firebase-admin";
-import { getAuth } from "@/lib/auth";
-
-// Lazy initialization of Firestore
-let db;
-function getDb() {
-  if (!db) {
-    db = getAdminFirestore();
-  }
-  return db;
-}
+import aj from "@/lib/arcjet";
+import { request } from "@arcjet/next";
+import { db as firestore } from "@/lib/firebase";
 
 // Check for Gemini API key
 const geminiApiKey = process.env.GEMINI_API_KEY;
@@ -89,7 +81,7 @@ const serializeAmount = (obj) => ({
 // Create Transaction
 export async function createTransaction(data) {
   try {
-    const { userId } = await getAuth();
+    const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
     // Get request data for ArcJet
@@ -119,7 +111,7 @@ export async function createTransaction(data) {
     }
 
     // Verify account exists
-    const accountRef = db.collection("users").doc(userId).collection("accounts").doc(data.accountId);
+    const accountRef = firestore.collection("users").doc(userId).collection("accounts").doc(data.accountId);
     const accountSnap = await accountRef.get();
     const account = accountSnap.exists ? { id: accountSnap.id, ...accountSnap.data() } : null;
 
@@ -133,8 +125,8 @@ export async function createTransaction(data) {
     const newBalance = Number(account.balance || 0) + balanceChange;
 
     // Create transaction and update account balance in a batch
-    const batch = db.batch();
-    const txCol = db.collection("users").doc(userId).collection("accounts").doc(data.accountId).collection("transactions");
+    const batch = firestore.batch();
+    const txCol = firestore.collection("users").doc(userId).collection("accounts").doc(data.accountId).collection("transactions");
     const txRef = txCol.doc(); // pre-generate id
 
     const nextRecurringDate =
@@ -168,36 +160,29 @@ export async function getTransaction(id) {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorized");
 
-  try {
-    const db = getDb();
-    const transactionsRef = db.collection("users").doc(userId).collection("transactions");
-
-    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
-    for (const acc of accountsSnap.docs) {
-      const txRef = db.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
-      const txSnap = await txRef.get();
-      if (txSnap.exists) {
-        return { id: txSnap.id, ...txSnap.data() };
-      }
+  // Find transaction by scanning accounts
+  const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+  for (const acc of accountsSnap.docs) {
+    const txRef = firestore.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
+    const txSnap = await txRef.get();
+    if (txSnap.exists) {
+      return { id: txSnap.id, ...txSnap.data() };
     }
-    throw new Error("Transaction not found");
-  } catch (error) {
-    throw new Error(error.message);
   }
+  throw new Error("Transaction not found");
 }
 
 export async function updateTransaction(id, data) {
   try {
-    const { userId } = await getAuth();
+    const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
     // Find original transaction and its account
     let original = null;
     let origAccountId = null;
-    const db = getDb();
-    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
+    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
     for (const acc of accountsSnap.docs) {
-      const txRef = db.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
+      const txRef = firestore.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
       const txSnap = await txRef.get();
       if (txSnap.exists) {
         original = { id: txSnap.id, ...txSnap.data() };
@@ -218,9 +203,9 @@ export async function updateTransaction(id, data) {
     const netBalanceChange = newBalanceChange - oldBalanceChange;
 
     // Update transaction and account balance in a batch
-    const accountRef = db.collection("users").doc(userId).collection("accounts").doc(data.accountId || origAccountId);
+    const accountRef = firestore.collection("users").doc(userId).collection("accounts").doc(data.accountId || origAccountId);
     const txRef = accountRef.collection("transactions").doc(id);
-    const batch = db.batch();
+    const batch = firestore.batch();
     const nextRecurringDate =
       data.isRecurring && data.recurringInterval
         ? calculateNextRecurringDate(data.date, data.recurringInterval)
@@ -252,31 +237,16 @@ export async function updateTransaction(id, data) {
 // Get User Transactions
 export async function getUserTransactions(query = {}) {
   try {
-    const { userId } = await getAuth();
+    const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    const db = getDb();
-    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
+    // Gather all transactions across user's accounts
+    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
     const all = [];
-    
     for (const acc of accountsSnap.docs) {
-      const txSnap = await db.collection("users")
-        .doc(userId)
-        .collection("accounts")
-        .doc(acc.id)
-        .collection("transactions")
-        .get();
-        
-      txSnap.forEach((d) => all.push({ 
-        id: d.id, 
-        ...d.data(), 
-        account: { 
-          id: acc.id, 
-          ...acc.data() 
-        } 
-      }));
+      const txSnap = await firestore.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").get();
+      txSnap.forEach((d) => all.push({ id: d.id, ...d.data(), account: { id: acc.id, ...acc.data() } }));
     }
-    
     // Apply basic filtering provided in query if fields align
     const filtered = all
       .filter((t) => (query.type ? t.type === query.type : true))

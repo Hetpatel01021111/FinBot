@@ -10,8 +10,8 @@ function serializeData(data) {
 
 export default async function AccountPage({ params }) {
   try {
-    // Get the account ID from params
-    const id = params.id;
+    // Get the account ID from params (await required in Next.js 15)
+    const { id } = await params;
     
     if (!id) {
       console.error("Missing account ID in params");

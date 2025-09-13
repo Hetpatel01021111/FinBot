@@ -462,21 +462,6 @@ export function DashboardOverview({ accounts, transactions }) {
                   </ResponsiveContainer>
                 </div>
                 
-                {/* Center content */}
-                {!activeIndex && pieChartData.length > 0 && (
-                  <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-center">
-                    <p className="text-lg font-bold">
-                      ${pieChartData[0].value.toFixed(2)}
-                    </p>
-                    <div className="flex items-center justify-center">
-                      <span className="mr-1">{getCategoryStyle(pieChartData[0].name).icon}</span>
-                      <span className="text-sm capitalize">{pieChartData[0].name.replace(/-/g, ' ')}</span>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">
-                      {(pieChartData[0].value / totalExpenses * 100).toFixed(1)}% of total
-                    </p>
-                  </div>
-                )}
               </div>
               
               <div className="grid grid-cols-3 gap-3 mt-6 px-6">

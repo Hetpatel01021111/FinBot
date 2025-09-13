@@ -1,17 +1,32 @@
 "use server";
 
-import { db } from "@/lib/prisma";
+import { db as firestore } from "@/lib/firebase";
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 
+// Serializer to handle Firestore Timestamps and other complex objects
 const serializeDecimal = (obj) => {
   const serialized = { ...obj };
-  if (obj.balance) {
-    serialized.balance = obj.balance.toNumber();
+  
+  // Convert Firestore Timestamps to ISO strings
+  if (serialized.date && typeof serialized.date.toDate === 'function') {
+    serialized.date = serialized.date.toDate().toISOString();
+  } else if (serialized.date instanceof Date) {
+    serialized.date = serialized.date.toISOString();
   }
-  if (obj.amount) {
-    serialized.amount = obj.amount.toNumber();
+  
+  if (serialized.createdAt && typeof serialized.createdAt.toDate === 'function') {
+    serialized.createdAt = serialized.createdAt.toDate().toISOString();
+  } else if (serialized.createdAt instanceof Date) {
+    serialized.createdAt = serialized.createdAt.toISOString();
   }
+  
+  if (serialized.nextRecurringDate && typeof serialized.nextRecurringDate.toDate === 'function') {
+    serialized.nextRecurringDate = serialized.nextRecurringDate.toDate().toISOString();
+  } else if (serialized.nextRecurringDate instanceof Date) {
+    serialized.nextRecurringDate = serialized.nextRecurringDate.toISOString();
+  }
+  
   return serialized;
 };
 
@@ -19,32 +34,21 @@ export async function getAccountWithTransactions(accountId) {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorized");
 
-  const user = await db.user.findUnique({
-    where: { clerkUserId: userId },
-  });
+  // Get account
+  const accountRef = firestore.collection("users").doc(userId).collection("accounts").doc(accountId);
+  const accountSnap = await accountRef.get();
+  if (!accountSnap.exists) return null;
 
-  if (!user) throw new Error("User not found");
+  const account = { id: accountSnap.id, ...accountSnap.data() };
 
-  const account = await db.account.findUnique({
-    where: {
-      id: accountId,
-      userId: user.id,
-    },
-    include: {
-      transactions: {
-        orderBy: { date: "desc" },
-      },
-      _count: {
-        select: { transactions: true },
-      },
-    },
-  });
-
-  if (!account) return null;
+  // Get transactions ordered by date desc
+  const txSnap = await accountRef.collection("transactions").orderBy("date", "desc").get();
+  const transactions = txSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
   return {
     ...serializeDecimal(account),
-    transactions: account.transactions.map(serializeDecimal),
+    transactions: transactions.map(serializeDecimal),
+    _count: { transactions: transactions.length },
   };
 }
 
@@ -52,55 +56,42 @@ export async function bulkDeleteTransactions(transactionIds) {
   try {
     const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
+    if (!Array.isArray(transactionIds) || transactionIds.length === 0) {
+      return { success: true };
+    }
 
-    const user = await db.user.findUnique({
-      where: { clerkUserId: userId },
-    });
+    // Strategy: iterate through user's accounts, try to find each transaction by id
+    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
 
-    if (!user) throw new Error("User not found");
+    const accountBalanceChanges = {}; // { [accountId]: number }
+    const batch = firestore.batch();
 
-    // Get transactions to calculate balance changes
-    const transactions = await db.transaction.findMany({
-      where: {
-        id: { in: transactionIds },
-        userId: user.id,
-      },
-    });
-
-    // Group transactions by account to update balances
-    const accountBalanceChanges = transactions.reduce((acc, transaction) => {
-      const change =
-        transaction.type === "EXPENSE"
-          ? transaction.amount
-          : -transaction.amount;
-      acc[transaction.accountId] = (acc[transaction.accountId] || 0) + change;
-      return acc;
-    }, {});
-
-    // Delete transactions and update account balances in a transaction
-    await db.$transaction(async (tx) => {
-      // Delete transactions
-      await tx.transaction.deleteMany({
-        where: {
-          id: { in: transactionIds },
-          userId: user.id,
-        },
-      });
-
-      // Update account balances
-      for (const [accountId, balanceChange] of Object.entries(
-        accountBalanceChanges
-      )) {
-        await tx.account.update({
-          where: { id: accountId },
-          data: {
-            balance: {
-              increment: balanceChange,
-            },
-          },
-        });
+    for (const accDoc of accountsSnap.docs) {
+      const accId = accDoc.id;
+      for (const txId of transactionIds) {
+        const txRef = firestore.collection("users").doc(userId).collection("accounts").doc(accId).collection("transactions").doc(txId);
+        const txSnap = await txRef.get();
+        if (txSnap.exists) {
+          const tx = txSnap.data();
+          const change = tx.type === "EXPENSE" ? tx.amount : -tx.amount;
+          accountBalanceChanges[accId] = (accountBalanceChanges[accId] || 0) + change;
+          batch.delete(txRef);
+        }
       }
-    });
+    }
+
+    // Update account balances
+    for (const [accountId, balanceChange] of Object.entries(accountBalanceChanges)) {
+      const accountRef = firestore.collection("users").doc(userId).collection("accounts").doc(accountId);
+      const accountSnap = await accountRef.get();
+      if (accountSnap.exists) {
+        const current = accountSnap.data();
+        const nextBalance = (current.balance || 0) - balanceChange; // reverse since change defined as expense:+ amount
+        batch.update(accountRef, { balance: nextBalance });
+      }
+    }
+
+    await batch.commit();
 
     revalidatePath("/dashboard");
     revalidatePath("/account/[id]");
@@ -116,34 +107,21 @@ export async function updateDefaultAccount(accountId) {
     const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    const user = await db.user.findUnique({
-      where: { clerkUserId: userId },
+    // Unset all current defaults
+    const accountsRef = firestore.collection("users").doc(userId).collection("accounts");
+    const accountsSnap = await accountsRef.get();
+
+    const batch = firestore.batch();
+    accountsSnap.forEach((docSnap) => {
+      const ref = accountsRef.doc(docSnap.id);
+      const isTarget = docSnap.id === accountId;
+      batch.update(ref, { isDefault: isTarget });
     });
 
-    if (!user) {
-      throw new Error("User not found");
-    }
-
-    // First, unset any existing default account
-    await db.account.updateMany({
-      where: {
-        userId: user.id,
-        isDefault: true,
-      },
-      data: { isDefault: false },
-    });
-
-    // Then set the new default account
-    const account = await db.account.update({
-      where: {
-        id: accountId,
-        userId: user.id,
-      },
-      data: { isDefault: true },
-    });
+    await batch.commit();
 
     revalidatePath("/dashboard");
-    return { success: true, data: serializeTransaction(account) };
+    return { success: true, data: { id: accountId, isDefault: true } };
   } catch (error) {
     return { success: false, error: error.message };
   }

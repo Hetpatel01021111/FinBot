@@ -1,10 +1,10 @@
 "use server";
 
 import { auth } from "@clerk/nextjs/server";
-import { db } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
+import { db as firestore } from "@/lib/firebase";
 
 // Check for Gemini API key
 const geminiApiKey = process.env.GEMINI_API_KEY;
@@ -110,54 +110,47 @@ export async function createTransaction(data) {
       throw new Error("Request blocked");
     }
 
-    const user = await db.user.findUnique({
-      where: { clerkUserId: userId },
-    });
-
-    if (!user) {
-      throw new Error("User not found");
-    }
-
-    const account = await db.account.findUnique({
-      where: {
-        id: data.accountId,
-        userId: user.id,
-      },
-    });
+    // Verify account exists
+    const accountRef = firestore.collection("users").doc(userId).collection("accounts").doc(data.accountId);
+    const accountSnap = await accountRef.get();
+    const account = accountSnap.exists ? { id: accountSnap.id, ...accountSnap.data() } : null;
 
     if (!account) {
       throw new Error("Account not found");
     }
 
     // Calculate new balance
-    const balanceChange = data.type === "EXPENSE" ? -data.amount : data.amount;
-    const newBalance = account.balance.toNumber() + balanceChange;
+    const amountNum = Number(data.amount);
+    const balanceChange = data.type === "EXPENSE" ? -amountNum : amountNum;
+    const newBalance = Number(account.balance || 0) + balanceChange;
 
-    // Create transaction and update account balance
-    const transaction = await db.$transaction(async (tx) => {
-      const newTransaction = await tx.transaction.create({
-        data: {
-          ...data,
-          userId: user.id,
-          nextRecurringDate:
-            data.isRecurring && data.recurringInterval
-              ? calculateNextRecurringDate(data.date, data.recurringInterval)
-              : null,
-        },
-      });
+    // Create transaction and update account balance in a batch
+    const batch = firestore.batch();
+    const txCol = firestore.collection("users").doc(userId).collection("accounts").doc(data.accountId).collection("transactions");
+    const txRef = txCol.doc(); // pre-generate id
 
-      await tx.account.update({
-        where: { id: data.accountId },
-        data: { balance: newBalance },
-      });
+    const nextRecurringDate =
+      data.isRecurring && data.recurringInterval
+        ? calculateNextRecurringDate(data.date, data.recurringInterval)
+        : null;
 
-      return newTransaction;
-    });
+    const txPayload = {
+      ...data,
+      amount: amountNum,
+      date: data.date ? new Date(data.date) : new Date(),
+      nextRecurringDate,
+      accountId: data.accountId,
+      userId,
+    };
+
+    batch.set(txRef, txPayload);
+    batch.update(accountRef, { balance: newBalance });
+    await batch.commit();
 
     revalidatePath("/dashboard");
-    revalidatePath(`/account/${transaction.accountId}`);
+    revalidatePath(`/account/${data.accountId}`);
 
-    return { success: true, data: serializeAmount(transaction) };
+    return { success: true, data: { id: txRef.id, ...txPayload } };
   } catch (error) {
     throw new Error(error.message);
   }
@@ -167,22 +160,16 @@ export async function getTransaction(id) {
   const { userId } = await auth();
   if (!userId) throw new Error("Unauthorized");
 
-  const user = await db.user.findUnique({
-    where: { clerkUserId: userId },
-  });
-
-  if (!user) throw new Error("User not found");
-
-  const transaction = await db.transaction.findUnique({
-    where: {
-      id,
-      userId: user.id,
-    },
-  });
-
-  if (!transaction) throw new Error("Transaction not found");
-
-  return serializeAmount(transaction);
+  // Find transaction by scanning accounts
+  const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+  for (const acc of accountsSnap.docs) {
+    const txRef = firestore.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
+    const txSnap = await txRef.get();
+    if (txSnap.exists) {
+      return { id: txSnap.id, ...txSnap.data() };
+    }
+  }
+  throw new Error("Transaction not found");
 }
 
 export async function updateTransaction(id, data) {
@@ -190,69 +177,58 @@ export async function updateTransaction(id, data) {
     const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    const user = await db.user.findUnique({
-      where: { clerkUserId: userId },
-    });
+    // Find original transaction and its account
+    let original = null;
+    let origAccountId = null;
+    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    for (const acc of accountsSnap.docs) {
+      const txRef = firestore.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
+      const txSnap = await txRef.get();
+      if (txSnap.exists) {
+        original = { id: txSnap.id, ...txSnap.data() };
+        origAccountId = acc.id;
+        break;
+      }
+    }
 
-    if (!user) throw new Error("User not found");
-
-    // Get original transaction to calculate balance change
-    const originalTransaction = await db.transaction.findUnique({
-      where: {
-        id,
-        userId: user.id,
-      },
-      include: {
-        account: true,
-      },
-    });
-
-    if (!originalTransaction) throw new Error("Transaction not found");
+    if (!original) throw new Error("Transaction not found");
 
     // Calculate balance changes
     const oldBalanceChange =
-      originalTransaction.type === "EXPENSE"
-        ? -originalTransaction.amount.toNumber()
-        : originalTransaction.amount.toNumber();
+      original.type === "EXPENSE" ? -Number(original.amount) : Number(original.amount);
 
-    const newBalanceChange =
-      data.type === "EXPENSE" ? -data.amount : data.amount;
+    const amountNum = Number(data.amount);
+    const newBalanceChange = data.type === "EXPENSE" ? -amountNum : amountNum;
 
     const netBalanceChange = newBalanceChange - oldBalanceChange;
 
-    // Update transaction and account balance in a transaction
-    const transaction = await db.$transaction(async (tx) => {
-      const updated = await tx.transaction.update({
-        where: {
-          id,
-          userId: user.id,
-        },
-        data: {
-          ...data,
-          nextRecurringDate:
-            data.isRecurring && data.recurringInterval
-              ? calculateNextRecurringDate(data.date, data.recurringInterval)
-              : null,
-        },
-      });
+    // Update transaction and account balance in a batch
+    const accountRef = firestore.collection("users").doc(userId).collection("accounts").doc(data.accountId || origAccountId);
+    const txRef = accountRef.collection("transactions").doc(id);
+    const batch = firestore.batch();
+    const nextRecurringDate =
+      data.isRecurring && data.recurringInterval
+        ? calculateNextRecurringDate(data.date, data.recurringInterval)
+        : null;
+    const updatedPayload = {
+      ...original,
+      ...data,
+      amount: amountNum,
+      date: data.date ? new Date(data.date) : new Date(original.date),
+      nextRecurringDate,
+    };
+    batch.set(txRef, updatedPayload);
 
-      // Update account balance
-      await tx.account.update({
-        where: { id: data.accountId },
-        data: {
-          balance: {
-            increment: netBalanceChange,
-          },
-        },
-      });
-
-      return updated;
-    });
+    // Adjust balance
+    const accSnap = await accountRef.get();
+    const currentBalance = accSnap.exists ? Number(accSnap.data().balance || 0) : 0;
+    batch.update(accountRef, { balance: currentBalance + netBalanceChange });
+    await batch.commit();
 
     revalidatePath("/dashboard");
-    revalidatePath(`/account/${data.accountId}`);
+    revalidatePath(`/account/${data.accountId || origAccountId}`);
 
-    return { success: true, data: serializeAmount(transaction) };
+    return { success: true, data: updatedPayload };
   } catch (error) {
     throw new Error(error.message);
   }
@@ -264,28 +240,19 @@ export async function getUserTransactions(query = {}) {
     const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    const user = await db.user.findUnique({
-      where: { clerkUserId: userId },
-    });
-
-    if (!user) {
-      throw new Error("User not found");
+    // Gather all transactions across user's accounts
+    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    const all = [];
+    for (const acc of accountsSnap.docs) {
+      const txSnap = await firestore.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").get();
+      txSnap.forEach((d) => all.push({ id: d.id, ...d.data(), account: { id: acc.id, ...acc.data() } }));
     }
+    // Apply basic filtering provided in query if fields align
+    const filtered = all
+      .filter((t) => (query.type ? t.type === query.type : true))
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
 
-    const transactions = await db.transaction.findMany({
-      where: {
-        userId: user.id,
-        ...query,
-      },
-      include: {
-        account: true,
-      },
-      orderBy: {
-        date: "desc",
-      },
-    });
-
-    return { success: true, data: transactions };
+    return { success: true, data: filtered };
   } catch (error) {
     throw new Error(error.message);
   }

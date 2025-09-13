@@ -1,19 +1,33 @@
 "use server";
 
 import aj from "@/lib/arcjet";
-import { db, safeDbOperation } from "@/lib/prisma";
 import { request } from "@arcjet/next";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
+import { db as firestore } from "@/lib/firebase";
 
 const serializeTransaction = (obj) => {
   const serialized = { ...obj };
-  if (obj.balance) {
-    serialized.balance = obj.balance.toNumber();
+  
+  // Convert Firestore Timestamps to ISO strings
+  if (serialized.date && typeof serialized.date.toDate === 'function') {
+    serialized.date = serialized.date.toDate().toISOString();
+  } else if (serialized.date instanceof Date) {
+    serialized.date = serialized.date.toISOString();
   }
-  if (obj.amount) {
-    serialized.amount = obj.amount.toNumber();
+  
+  if (serialized.createdAt && typeof serialized.createdAt.toDate === 'function') {
+    serialized.createdAt = serialized.createdAt.toDate().toISOString();
+  } else if (serialized.createdAt instanceof Date) {
+    serialized.createdAt = serialized.createdAt.toISOString();
   }
+  
+  if (serialized.nextRecurringDate && typeof serialized.nextRecurringDate.toDate === 'function') {
+    serialized.nextRecurringDate = serialized.nextRecurringDate.toDate().toISOString();
+  } else if (serialized.nextRecurringDate instanceof Date) {
+    serialized.nextRecurringDate = serialized.nextRecurringDate.toISOString();
+  }
+  
   return serialized;
 };
 
@@ -34,59 +48,10 @@ export async function getUserAccounts() {
       { id: clerkUser.id, email: clerkUser.emailAddresses?.[0]?.emailAddress } : 
       "No clerk user details");
     
-    // Find or create user in our database
-    const dbUser = await safeDbOperation(async () => {
-      // First try to find the user
-      const existingUser = await db.user.findUnique({
-        where: { clerkUserId: userId },
-      });
-      
-      if (existingUser) {
-        console.log("Found existing user:", existingUser.id);
-        return existingUser;
-      }
-      
-      // If user doesn't exist, create a new one
-      console.log("User not found, creating new user");
-      const email = clerkUser?.emailAddresses?.[0]?.emailAddress || "user@example.com";
-      const name = clerkUser?.firstName ? 
-        `${clerkUser.firstName} ${clerkUser.lastName || ''}`.trim() : 
-        "New User";
-      
-      const newUser = await db.user.create({
-        data: {
-          clerkUserId: userId,
-          email,
-          name,
-        },
-      });
-      
-      console.log("Successfully created new user:", newUser.id);
-      return newUser;
-    });
-    
-    if (!dbUser) {
-      console.error("Failed to find or create user");
-      throw new Error("User not available");
-    }
-    
-    // Get user accounts
-    const accounts = await safeDbOperation(async () => {
-      console.log("Fetching accounts for user:", dbUser.id);
-      return db.account.findMany({
-        where: { userId: dbUser.id },
-        orderBy: { createdAt: "desc" },
-        include: {
-          _count: {
-            select: {
-              transactions: true,
-            },
-          },
-        },
-      });
-    });
-    
-    console.log(`Found ${accounts.length} accounts for user ${dbUser.id}`);
+    // Get user accounts from Firestore
+    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    const accounts = accountsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    console.log(`Found ${accounts.length} accounts for user ${userId}`);
     
     // Serialize accounts before sending to client
     const serializedAccounts = accounts.map(serializeTransaction);
@@ -103,8 +68,7 @@ export async function createAccount(data) {
     console.log("Starting account creation with data:", { ...data, balance: data.balance ? 'REDACTED' : undefined });
     console.log("Environment check:", { 
       environment: process.env.NODE_ENV,
-      hasDatabaseUrl: !!process.env.DATABASE_URL,
-      hasDirectUrl: !!process.env.DIRECT_URL
+      hasFirebase: true,
     });
     
     // Validate input data
@@ -126,111 +90,35 @@ export async function createAccount(data) {
     }
     
     console.log("Authenticated userId for account creation:", userId);
+
+    // **DEBUGGING**: Log the data payload before writing to Firestore
+    const accountPayload = {
+      name: data.name,
+      type: data.type,
+      balance: Number(data.balance || 0),
+      isDefault: !!data.isDefault,
+      createdAt: new Date().toISOString(),
+    };
+    console.log("Attempting to write to Firestore with payload:", accountPayload);
     
-    // Find or create user in our database with multiple retries
-    let dbUser = null;
-    let retryCount = 0;
-    const maxRetries = 3;
-    
-    while (!dbUser && retryCount < maxRetries) {
-      try {
-        // First try to find the user
-        const existingUser = await db.user.findUnique({
-          where: { clerkUserId: userId },
-        });
-        
-        if (existingUser) {
-          console.log("Found existing user for account creation:", existingUser.id);
-          dbUser = existingUser;
-          break;
-        }
-        
-        // If user doesn't exist, create a new one
-        console.log("User not found, creating new user for account creation");
-        const clerkUser = await currentUser().catch(err => {
-          console.error("Error fetching Clerk user details:", err);
-          return null;
-        });
-        
-        const email = clerkUser?.emailAddresses?.[0]?.emailAddress || "user@example.com";
-        const name = clerkUser?.firstName ? 
-          `${clerkUser.firstName} ${clerkUser.lastName || ''}`.trim() : 
-          "New User";
-        
-        dbUser = await db.user.create({
-          data: {
-            clerkUserId: userId,
-            email,
-            name,
-          },
-        });
-        
-        console.log("Successfully created new user for account creation:", dbUser.id);
-      } catch (error) {
-        retryCount++;
-        console.error(`Error finding/creating user (attempt ${retryCount}/${maxRetries}):`, error);
-        
-        // Wait before retrying
-        if (retryCount < maxRetries) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-        }
-      }
-    }
-    
-    if (!dbUser) {
-      console.error("Failed to find or create user after multiple attempts");
-      return { success: false, error: "Database operation failed" };
-    }
-    
-    // Create account with retry logic
-    console.log("Creating new account for user:", dbUser.id);
-    let account = null;
-    retryCount = 0;
-    
-    while (!account && retryCount < maxRetries) {
-      try {
-        account = await db.account.create({
-          data: {
-            name: data.name,
-            type: data.type,
-            balance: parseFloat(data.balance || "0"),
-            isDefault: data.isDefault || false,
-            userId: dbUser.id,
-            // Remove currency field as it's not in the schema
-          },
-        });
-        console.log("Successfully created account:", account.id);
-      } catch (error) {
-        retryCount++;
-        console.error(`Error creating account (attempt ${retryCount}/${maxRetries}):`, error);
-        
-        // Wait before retrying
-        if (retryCount < maxRetries) {
-          await new Promise(resolve => setTimeout(resolve, 1000 * retryCount));
-        }
-      }
-    }
-    
-    if (!account) {
-      console.error("Failed to create account after multiple attempts");
-      return { success: false, error: "Failed to create account after multiple attempts" };
-    }
+    // Create account doc in Firestore
+    const accountsRef = firestore.collection("users").doc(userId).collection("accounts");
+    const newAccountRef = accountsRef.doc();
+    await newAccountRef.set(accountPayload);
+    console.log(`Successfully wrote to Firestore for document ID: ${newAccountRef.id}`);
 
     // If this is the default account, update all other accounts
     if (data.isDefault) {
       console.log("Setting as default account, updating other accounts");
       try {
-        await db.account.updateMany({
-          where: {
-            userId: dbUser.id,
-            id: {
-              not: account.id,
-            },
-          },
-          data: {
-            isDefault: false,
-          },
+        const accountsSnap = await accountsRef.get();
+        const batch = firestore.batch();
+        accountsSnap.forEach(doc => {
+          if (doc.id !== newAccountRef.id && doc.data().isDefault) {
+            batch.update(doc.ref, { isDefault: false });
+          }
         });
+        await batch.commit();
       } catch (updateError) {
         // Non-critical error, just log it
         console.error("Error updating other accounts:", updateError);
@@ -251,11 +139,11 @@ export async function createAccount(data) {
     
     return { 
       success: true, 
-      accountId: account.id,
+      accountId: newAccountRef.id,
       message: "Account created successfully"
     };
   } catch (error) {
-    console.error("Error creating account:", error);
+    console.error("Error creating account in catch block:", error);
     // Return a more user-friendly error message with detailed logging
     return { 
       success: false, 
@@ -270,30 +158,14 @@ export async function getDashboardData() {
     const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    // Find user
-    const user = await db.user.findUnique({
-      where: { clerkUserId: userId },
-    });
-
-    if (!user) {
-      throw new Error("User not found");
-    }
-
     // Get recent transactions
-    const transactions = await db.transaction.findMany({
-      where: {
-        account: {
-          userId: user.id,
-        },
-      },
-      orderBy: {
-        date: "desc",
-      },
-      take: 5,
-      include: {
-        account: true,
-      },
-    });
+    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    const all = [];
+    for (const acc of accountsSnap.docs) {
+      const txSnap = await acc.ref.collection("transactions").get();
+      txSnap.forEach((d) => all.push({ id: d.id, ...d.data(), account: { id: acc.id, ...acc.data() } }));
+    }
+    const transactions = all.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 5);
 
     // Serialize transactions
     const serializedTransactions = transactions.map(serializeTransaction);

@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { scanReceipt } from "@/actions/transaction";
-import { db } from "@/lib/prisma";
 import { jwtVerify } from "jose";
 
 // Secret key for verifying tokens - must match the one used for generation
@@ -24,16 +23,13 @@ async function verifyToken(req) {
     // Verify the token
     const { payload } = await jwtVerify(token, SECRET_KEY);
     
-    // Get the user from the database
-    const user = await db.user.findUnique({
-      where: { id: payload.userId },
-    });
-
-    if (!user) {
-      return { valid: false, error: "User not found" };
+    // The payload now contains clerkUserId, which is sufficient for validation.
+    if (!payload.clerkUserId) {
+      return { valid: false, error: "Invalid token payload" };
     }
 
-    return { valid: true, user };
+    // Pass the clerkUserId along in case it's needed.
+    return { valid: true, userId: payload.clerkUserId };
   } catch (error) {
     console.error("Token verification error:", error);
     return { valid: false, error: error.message };

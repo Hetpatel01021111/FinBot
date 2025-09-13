@@ -12,9 +12,11 @@ import { usePathname } from "next/navigation";
 const Header = () => {
   const [scrolled, setScrolled] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mounted, setMounted] = useState(false);
   const pathname = usePathname();
 
   useEffect(() => {
+    setMounted(true);
     const handleScroll = () => {
       setScrolled(window.scrollY > 10);
     };
@@ -39,8 +41,8 @@ const Header = () => {
       <nav className="container mx-auto px-4 flex items-center justify-between">
         {/* Logo with animation */}
         <motion.div
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
+          initial={mounted ? { opacity: 0, x: -20 } : false}
+          animate={mounted ? { opacity: 1, x: 0 } : {}}
           transition={{ duration: 0.5 }}
         >
           <Link href="/" className="flex items-center">
@@ -64,7 +66,7 @@ const Header = () => {
               <motion.a
                 key={item.name}
                 href={item.href}
-                whileHover={{ scale: 1.05, color: "#2563eb" }}
+                whileHover={mounted ? { scale: 1.05, color: "#2563eb" } : {}}
                 className={`text-gray-600 hover:text-blue-600 px-3 py-2 rounded-lg transition-colors ${
                   pathname === item.href ? "text-blue-600 font-medium" : ""
                 }`}
@@ -78,7 +80,7 @@ const Header = () => {
         {/* Action Buttons - Added margin between Dashboard and Add Transaction */}
         <div className="flex items-center space-x-4">
           <SignedIn>
-            <motion.div whileHover={{ scale: 1.05 }} className="mr-2">
+            <motion.div whileHover={mounted ? { scale: 1.05 } : {}} className="mr-2">
               <Link href="/dashboard">
                 <Button
                   variant="outline"
@@ -90,7 +92,7 @@ const Header = () => {
               </Link>
             </motion.div>
 
-            <motion.div whileHover={{ scale: 1.05 }}>
+            <motion.div whileHover={mounted ? { scale: 1.05 } : {}}>
               <Link href="/transaction/create">
                 <Button className="flex items-center gap-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 shadow-md">
                   <PenBox size={18} />
@@ -101,7 +103,7 @@ const Header = () => {
           </SignedIn>
 
           <SignedOut>
-            <motion.div whileHover={{ scale: 1.05 }}>
+            <motion.div whileHover={mounted ? { scale: 1.05 } : {}}>
               <SignInButton forceRedirectUrl="/dashboard">
                 <Button
                   variant="outline"
@@ -114,7 +116,7 @@ const Header = () => {
           </SignedOut>
 
           <SignedIn>
-            <motion.div whileHover={{ scale: 1.05 }} className="ml-2">
+            <motion.div whileHover={mounted ? { scale: 1.05 } : {}} className="ml-2">
               <UserButton
                 appearance={{
                   elements: {

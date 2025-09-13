@@ -1,6 +1,6 @@
 "use server";
 
-import { db } from "@/lib/prisma";
+import { db as firestore } from "@/lib/firebase";
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 
@@ -9,21 +9,12 @@ export async function getCurrentBudget(accountId) {
     const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    const user = await db.user.findUnique({
-      where: { clerkUserId: userId },
-    });
+    // Read budget doc (single current budget per user)
+    const budgetRef = firestore.collection("users").doc(userId).collection("budgets").doc("current");
+    const budgetSnap = await budgetRef.get();
+    const budget = budgetSnap.exists ? { id: budgetSnap.id, ...budgetSnap.data() } : null;
 
-    if (!user) {
-      throw new Error("User not found");
-    }
-
-    const budget = await db.budget.findFirst({
-      where: {
-        userId: user.id,
-      },
-    });
-
-    // Get current month's expenses
+    // Get current month's expenses (filter in JS)
     const currentDate = new Date();
     const startOfMonth = new Date(
       currentDate.getFullYear(),
@@ -36,26 +27,24 @@ export async function getCurrentBudget(accountId) {
       0
     );
 
-    const expenses = await db.transaction.aggregate({
-      where: {
-        userId: user.id,
-        type: "EXPENSE",
-        date: {
-          gte: startOfMonth,
-          lte: endOfMonth,
-        },
-        accountId,
-      },
-      _sum: {
-        amount: true,
-      },
+    // Fetch all transactions under the account and aggregate in JS
+    const txSnap = await firestore.collection("users").doc(userId).collection("accounts").doc(accountId).collection("transactions").get();
+    let sum = 0;
+    txSnap.forEach((d) => {
+      const t = d.data();
+      const dateVal = t.date instanceof Date ? t.date : new Date(t.date);
+      if (
+        t.type === "EXPENSE" &&
+        dateVal >= startOfMonth &&
+        dateVal <= endOfMonth
+      ) {
+        sum += Number(t.amount || 0);
+      }
     });
 
     return {
-      budget: budget ? { ...budget, amount: budget.amount.toNumber() } : null,
-      currentExpenses: expenses._sum.amount
-        ? expenses._sum.amount.toNumber()
-        : 0,
+      budget: budget ? { ...budget, amount: Number(budget.amount) } : null,
+      currentExpenses: sum,
     };
   } catch (error) {
     console.error("Error fetching budget:", error);
@@ -68,30 +57,20 @@ export async function updateBudget(amount) {
     const { userId } = await auth();
     if (!userId) throw new Error("Unauthorized");
 
-    const user = await db.user.findUnique({
-      where: { clerkUserId: userId },
-    });
-
-    if (!user) throw new Error("User not found");
-
-    // Update or create budget
-    const budget = await db.budget.upsert({
-      where: {
-        userId: user.id,
+    // Upsert current budget doc
+    const budgetRef = firestore.collection("users").doc(userId).collection("budgets").doc("current");
+    await budgetRef.set(
+      {
+        amount: Number(amount),
+        updatedAt: new Date(),
       },
-      update: {
-        amount,
-      },
-      create: {
-        userId: user.id,
-        amount,
-      },
-    });
+      { merge: true }
+    );
 
     revalidatePath("/dashboard");
     return {
       success: true,
-      data: { ...budget, amount: budget.amount.toNumber() },
+      data: { amount: Number(amount) },
     };
   } catch (error) {
     console.error("Error updating budget:", error);

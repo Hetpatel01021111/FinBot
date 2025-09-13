@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { auth } from "@clerk/nextjs/server";
-import { db } from "@/lib/prisma";
 import { SignJWT } from "jose";
 
 // Secret key for signing tokens - in production, use a proper secret from environment variables
@@ -18,21 +17,9 @@ export async function GET(req) {
       );
     }
 
-    // Get the user from the database
-    const user = await db.user.findUnique({
-      where: { clerkUserId: userId },
-    });
-
-    if (!user) {
-      return NextResponse.json(
-        { error: "User not found" },
-        { status: 404 }
-      );
-    }
 
     // Create a JWT token that expires in 30 days
     const token = await new SignJWT({ 
-      userId: user.id,
       clerkUserId: userId
     })
       .setProtectedHeader({ alg: "HS256" })

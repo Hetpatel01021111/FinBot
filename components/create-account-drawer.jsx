@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import {
   Drawer,
   DrawerContent,
+  DrawerDescription,
   DrawerHeader,
   DrawerTitle,
   DrawerTrigger,
@@ -78,6 +79,9 @@ export function CreateAccountDrawer({ children }) {
       <DrawerContent>
         <DrawerHeader>
           <DrawerTitle>Create New Account</DrawerTitle>
+          <DrawerDescription>
+            Add a new account to track your finances. Choose the account type and set an initial balance.
+          </DrawerDescription>
         </DrawerHeader>
         <div className="px-4 pb-4">
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">

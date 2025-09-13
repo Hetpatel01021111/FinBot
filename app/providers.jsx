@@ -2,6 +2,7 @@
 
 import { ClerkProvider } from "@clerk/nextjs";
 import { Toaster } from "sonner";
+import { FirebaseAuthProvider } from "@/components/FirebaseAuthProvider";
 
 export default function Providers({ children }) {
   const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
@@ -11,7 +12,9 @@ export default function Providers({ children }) {
     console.warn("Clerk not configured - running without authentication");
     return (
       <div>
-        {children}
+        <FirebaseAuthProvider>
+          {children}
+        </FirebaseAuthProvider>
         <Toaster richColors position="top-right" />
         <div className="fixed bottom-4 right-4 bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-2 rounded shadow-lg">
           <p className="text-sm">⚠️ Authentication disabled - Configure Clerk keys</p>
@@ -30,7 +33,9 @@ export default function Providers({ children }) {
       afterSignInUrl="/dashboard"
       afterSignUpUrl="/dashboard"
     >
-      {children}
+      <FirebaseAuthProvider>
+        {children}
+      </FirebaseAuthProvider>
       <Toaster richColors position="top-right" />
     </ClerkProvider>
   );

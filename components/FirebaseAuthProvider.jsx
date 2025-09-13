@@ -28,20 +28,19 @@ export function FirebaseAuthProvider({ children }) {
         setError(null);
 
         if (userId) {
-          // Get Firebase custom token from our API
-          const response = await fetch('/api/auth/generate-token', {
-            method: 'GET',
+          // Get a Firebase custom token from our API (server creates token via Admin SDK)
+          const response = await fetch('/api/auth/firebase-token', {
+            method: 'POST',
             headers: {
               'Content-Type': 'application/json',
             },
           });
 
           if (!response.ok) {
-            throw new Error('Failed to get Firebase token');
+            throw new Error('Failed to get Firebase custom token');
           }
 
           const { token } = await response.json();
-          
           // Sign in to Firebase with the custom token
           const userCredential = await signInWithCustomToken(auth, token);
           setFirebaseUser(userCredential.user);

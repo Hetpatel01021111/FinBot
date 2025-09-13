@@ -2,55 +2,26 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Allow authenticated users to read and write their own user document
-    match /users/{userId} {
+    // All user data (documents and nested subcollections) under users/{userId}/...
+    match /users/{userId}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
-    
-    // Allow authenticated users to manage their transactions
-    match /transactions/{transactionId} {
-      allow read, write: if request.auth != null && 
-        (resource == null || resource.data.userId == request.auth.uid);
-      allow create: if request.auth != null && 
-        request.resource.data.userId == request.auth.uid;
+
+    // Optional: public metadata if you have any public docs
+    match /public/{document=**} {
+      allow read: if true;
+      allow write: if false;
     }
-    
-    // Allow authenticated users to manage their budgets
-    match /budgets/{budgetId} {
-      allow read, write: if request.auth != null && 
-        (resource == null || resource.data.userId == request.auth.uid);
-      allow create: if request.auth != null && 
-        request.resource.data.userId == request.auth.uid;
-    }
-    
-    // Allow authenticated users to manage their accounts
-    match /accounts/{accountId} {
-      allow read, write: if request.auth != null && 
-        (resource == null || resource.data.userId == request.auth.uid);
-      allow create: if request.auth != null && 
-        request.resource.data.userId == request.auth.uid;
-    }
-    
-    // Allow authenticated users to manage their categories
-    match /categories/{categoryId} {
-      allow read, write: if request.auth != null && 
-        (resource == null || resource.data.userId == request.auth.uid);
-      allow create: if request.auth != null && 
-        request.resource.data.userId == request.auth.uid;
-    }
-    
-    // Allow server-side operations (Firebase Admin SDK) - for API routes
-    match /{document=**} {
-      allow read, write: if request.auth.token.firebase.sign_in_provider == 'custom';
-    }
-    
-    // Allow test collection for development/testing
+
+    // Test collection for development/testing
     match /test/{document=**} {
       allow read, write: if request.auth != null;
     }
-    
-    // Temporary: Allow all operations for development (REMOVE IN PRODUCTION)
-    // Uncomment the line below if you need to test without authentication
-    // match /{document=**} { allow read, write: if true; }
+
+    // Server-side operations with Firebase Admin SDK are not evaluated by rules,
+    // but if you also use Custom Auth tokens on client, you can allow specific providers:
+    // match /{document=**} {
+    //   allow read, write: if request.auth.token.firebase.sign_in_provider == 'custom';
+    // }
   }
 }

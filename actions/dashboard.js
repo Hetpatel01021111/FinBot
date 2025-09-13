@@ -4,7 +4,7 @@ import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
-import { db as firestore } from "@/lib/firebase";
+import { getAdminFirestore } from "@/lib/firebase-admin";
 
 const serializeTransaction = (obj) => {
   const serialized = { ...obj };
@@ -48,8 +48,13 @@ export async function getUserAccounts() {
       { id: clerkUser.id, email: clerkUser.emailAddresses?.[0]?.emailAddress } : 
       "No clerk user details");
     
-    // Get user accounts from Firestore
-    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    // Initialize Firestore (Admin SDK) and fetch accounts
+    const firestore = getAdminFirestore();
+    const accountsSnap = await firestore
+      .collection("users")
+      .doc(userId)
+      .collection("accounts")
+      .get();
     const accounts = accountsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     console.log(`Found ${accounts.length} accounts for user ${userId}`);
     
@@ -66,10 +71,7 @@ export async function getUserAccounts() {
 export async function createAccount(data) {
   try {
     console.log("Starting account creation with data:", { ...data, balance: data.balance ? 'REDACTED' : undefined });
-    console.log("Environment check:", { 
-      environment: process.env.NODE_ENV,
-      hasFirebase: true,
-    });
+    console.log("Environment check:", { environment: process.env.NODE_ENV });
     
     // Validate input data
     if (!data || !data.name || !data.type) {
@@ -102,6 +104,7 @@ export async function createAccount(data) {
     console.log("Attempting to write to Firestore with payload:", accountPayload);
     
     // Create account doc in Firestore
+    const firestore = getAdminFirestore();
     const accountsRef = firestore.collection("users").doc(userId).collection("accounts");
     const newAccountRef = accountsRef.doc();
     await newAccountRef.set(accountPayload);
@@ -159,7 +162,12 @@ export async function getDashboardData() {
     if (!userId) throw new Error("Unauthorized");
 
     // Get recent transactions
-    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    const firestore = getAdminFirestore();
+    const accountsSnap = await firestore
+      .collection("users")
+      .doc(userId)
+      .collection("accounts")
+      .get();
     const all = [];
     for (const acc of accountsSnap.docs) {
       const txSnap = await acc.ref.collection("transactions").get();

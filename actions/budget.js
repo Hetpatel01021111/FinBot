@@ -32,7 +32,16 @@ export async function getCurrentBudget(accountId) {
     let sum = 0;
     txSnap.forEach((d) => {
       const t = d.data();
-      const dateVal = t.date instanceof Date ? t.date : new Date(t.date);
+      // Handle Firestore Timestamps properly
+      let dateVal;
+      if (t.date && typeof t.date.toDate === 'function') {
+        dateVal = t.date.toDate(); // Firestore Timestamp
+      } else if (t.date instanceof Date) {
+        dateVal = t.date; // JavaScript Date
+      } else {
+        dateVal = new Date(t.date); // String date
+      }
+      
       if (
         t.type === "EXPENSE" &&
         dateVal >= startOfMonth &&
@@ -42,8 +51,25 @@ export async function getCurrentBudget(accountId) {
       }
     });
 
+    // Serialize budget data to handle Firestore Timestamps
+    const serializedBudget = budget ? {
+      ...budget,
+      amount: Number(budget.amount),
+      // Convert any Firestore Timestamps to ISO strings
+      updatedAt: budget.updatedAt && typeof budget.updatedAt.toDate === 'function' 
+        ? budget.updatedAt.toDate().toISOString() 
+        : budget.updatedAt instanceof Date 
+        ? budget.updatedAt.toISOString()
+        : budget.updatedAt,
+      createdAt: budget.createdAt && typeof budget.createdAt.toDate === 'function'
+        ? budget.createdAt.toDate().toISOString()
+        : budget.createdAt instanceof Date
+        ? budget.createdAt.toISOString()
+        : budget.createdAt
+    } : null;
+
     return {
-      budget: budget ? { ...budget, amount: Number(budget.amount) } : null,
+      budget: serializedBudget,
       currentExpenses: sum,
     };
   } catch (error) {

@@ -4,7 +4,9 @@ import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
-import { db as firestore } from "@/lib/firebase";
+import { getAdminFirestore } from "@/lib/firebase-admin";
+
+const db = getAdminFirestore();
 
 // Check for Gemini API key
 const geminiApiKey = process.env.GEMINI_API_KEY;
@@ -111,7 +113,7 @@ export async function createTransaction(data) {
     }
 
     // Verify account exists
-    const accountRef = firestore.collection("users").doc(userId).collection("accounts").doc(data.accountId);
+    const accountRef = db.collection("users").doc(userId).collection("accounts").doc(data.accountId);
     const accountSnap = await accountRef.get();
     const account = accountSnap.exists ? { id: accountSnap.id, ...accountSnap.data() } : null;
 
@@ -125,8 +127,8 @@ export async function createTransaction(data) {
     const newBalance = Number(account.balance || 0) + balanceChange;
 
     // Create transaction and update account balance in a batch
-    const batch = firestore.batch();
-    const txCol = firestore.collection("users").doc(userId).collection("accounts").doc(data.accountId).collection("transactions");
+    const batch = db.batch();
+    const txCol = db.collection("users").doc(userId).collection("accounts").doc(data.accountId).collection("transactions");
     const txRef = txCol.doc(); // pre-generate id
 
     const nextRecurringDate =
@@ -182,7 +184,7 @@ export async function updateTransaction(id, data) {
     let origAccountId = null;
     const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
     for (const acc of accountsSnap.docs) {
-      const txRef = firestore.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
+      const txRef = db.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").doc(id);
       const txSnap = await txRef.get();
       if (txSnap.exists) {
         original = { id: txSnap.id, ...txSnap.data() };
@@ -203,7 +205,7 @@ export async function updateTransaction(id, data) {
     const netBalanceChange = newBalanceChange - oldBalanceChange;
 
     // Update transaction and account balance in a batch
-    const accountRef = firestore.collection("users").doc(userId).collection("accounts").doc(data.accountId || origAccountId);
+    const accountRef = db.collection("users").doc(userId).collection("accounts").doc(data.accountId || origAccountId);
     const txRef = accountRef.collection("transactions").doc(id);
     const batch = firestore.batch();
     const nextRecurringDate =
@@ -244,7 +246,7 @@ export async function getUserTransactions(query = {}) {
     const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
     const all = [];
     for (const acc of accountsSnap.docs) {
-      const txSnap = await firestore.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").get();
+      const txSnap = await db.collection("users").doc(userId).collection("accounts").doc(acc.id).collection("transactions").get();
       txSnap.forEach((d) => all.push({ id: d.id, ...d.data(), account: { id: acc.id, ...acc.data() } }));
     }
     // Apply basic filtering provided in query if fields align

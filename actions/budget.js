@@ -1,8 +1,10 @@
 "use server";
 
-import { db as firestore } from "@/lib/firebase";
+import { getAdminFirestore } from "@/lib/firebase-admin";
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
+
+const db = getAdminFirestore();
 
 export async function getCurrentBudget(accountId) {
   try {
@@ -10,8 +12,8 @@ export async function getCurrentBudget(accountId) {
     if (!userId) throw new Error("Unauthorized");
 
     // Read budget doc (single current budget per user)
-    const budgetRef = firestore.collection("users").doc(userId).collection("budgets").doc("current");
-    const budgetSnap = await budgetRef.get();
+    const budgetRef = db.collection("users").doc(userId).collection("budgets").doc("current");
+    const budgetSnap = await db.collection("users").doc(userId).collection("budgets").doc("current").get();
     const budget = budgetSnap.exists ? { id: budgetSnap.id, ...budgetSnap.data() } : null;
 
     // Get current month's expenses (filter in JS)
@@ -28,7 +30,7 @@ export async function getCurrentBudget(accountId) {
     );
 
     // Fetch all transactions under the account and aggregate in JS
-    const txSnap = await firestore.collection("users").doc(userId).collection("accounts").doc(accountId).collection("transactions").get();
+    const txSnap = await db.collection("users").doc(userId).collection("accounts").doc(accountId).collection("transactions").get();
     let sum = 0;
     txSnap.forEach((d) => {
       const t = d.data();
@@ -84,7 +86,7 @@ export async function updateBudget(amount) {
     if (!userId) throw new Error("Unauthorized");
 
     // Upsert current budget doc
-    const budgetRef = firestore.collection("users").doc(userId).collection("budgets").doc("current");
+    const budgetRef = db.collection("users").doc(userId).collection("budgets").doc("current");
     await budgetRef.set(
       {
         amount: Number(amount),

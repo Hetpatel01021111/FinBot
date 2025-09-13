@@ -1,8 +1,10 @@
 "use server";
 
-import { db as firestore } from "@/lib/firebase";
+import { getAdminFirestore } from "@/lib/firebase-admin";
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
+
+const db = getAdminFirestore();
 
 // Serializer to handle Firestore Timestamps and other complex objects
 const serializeDecimal = (obj) => {
@@ -35,7 +37,7 @@ export async function getAccountWithTransactions(accountId) {
   if (!userId) throw new Error("Unauthorized");
 
   // Get account
-  const accountRef = firestore.collection("users").doc(userId).collection("accounts").doc(accountId);
+  const accountRef = db.collection("users").doc(userId).collection("accounts").doc(accountId);
   const accountSnap = await accountRef.get();
   if (!accountSnap.exists) return null;
 
@@ -61,10 +63,10 @@ export async function bulkDeleteTransactions(transactionIds) {
     }
 
     // Strategy: iterate through user's accounts, try to find each transaction by id
-    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
 
     const accountBalanceChanges = {}; // { [accountId]: number }
-    const batch = firestore.batch();
+    const batch = db.batch();
 
     for (const accDoc of accountsSnap.docs) {
       const accId = accDoc.id;
@@ -82,7 +84,7 @@ export async function bulkDeleteTransactions(transactionIds) {
 
     // Update account balances
     for (const [accountId, balanceChange] of Object.entries(accountBalanceChanges)) {
-      const accountRef = firestore.collection("users").doc(userId).collection("accounts").doc(accountId);
+      const accountRef = db.collection("users").doc(userId).collection("accounts").doc(accountId);
       const accountSnap = await accountRef.get();
       if (accountSnap.exists) {
         const current = accountSnap.data();
@@ -111,7 +113,7 @@ export async function updateDefaultAccount(accountId) {
     const accountsRef = firestore.collection("users").doc(userId).collection("accounts");
     const accountsSnap = await accountsRef.get();
 
-    const batch = firestore.batch();
+    const batch = db.batch();
     accountsSnap.forEach((docSnap) => {
       const ref = accountsRef.doc(docSnap.id);
       const isTarget = docSnap.id === accountId;

@@ -4,7 +4,9 @@ import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
-import { db as firestore } from "@/lib/firebase";
+import { getAdminFirestore } from "@/lib/firebase-admin";
+
+const db = getAdminFirestore();
 
 const serializeTransaction = (obj) => {
   const serialized = { ...obj };
@@ -49,7 +51,7 @@ export async function getUserAccounts() {
       "No clerk user details");
     
     // Get user accounts from Firestore
-    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
     const accounts = accountsSnap.docs.map((d) => ({ id: d.id, ...d.data() }));
     console.log(`Found ${accounts.length} accounts for user ${userId}`);
     
@@ -102,7 +104,7 @@ export async function createAccount(data) {
     console.log("Attempting to write to Firestore with payload:", accountPayload);
     
     // Create account doc in Firestore
-    const accountsRef = firestore.collection("users").doc(userId).collection("accounts");
+    const accountsRef = db.collection("users").doc(userId).collection("accounts");
     const newAccountRef = accountsRef.doc();
     await newAccountRef.set(accountPayload);
     console.log(`Successfully wrote to Firestore for document ID: ${newAccountRef.id}`);
@@ -112,7 +114,7 @@ export async function createAccount(data) {
       console.log("Setting as default account, updating other accounts");
       try {
         const accountsSnap = await accountsRef.get();
-        const batch = firestore.batch();
+        const batch = db.batch();
         accountsSnap.forEach(doc => {
           if (doc.id !== newAccountRef.id && doc.data().isDefault) {
             batch.update(doc.ref, { isDefault: false });
@@ -159,7 +161,7 @@ export async function getDashboardData() {
     if (!userId) throw new Error("Unauthorized");
 
     // Get recent transactions
-    const accountsSnap = await firestore.collection("users").doc(userId).collection("accounts").get();
+    const accountsSnap = await db.collection("users").doc(userId).collection("accounts").get();
     const all = [];
     for (const acc of accountsSnap.docs) {
       const txSnap = await acc.ref.collection("transactions").get();

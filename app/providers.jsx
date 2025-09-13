@@ -5,15 +5,24 @@ import { Toaster } from "sonner";
 
 export default function Providers({ children }) {
   const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  
   if (!publishableKey) {
-    // Soft warning in client; real enforcement happens server-side
-    console.warn("Clerk publishable key is missing. Set NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY in .env");
+    console.error("Missing NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY");
+    return <div>Missing Clerk configuration</div>;
   }
 
   return (
-    <ClerkProvider publishableKey={publishableKey}>
+    <ClerkProvider 
+      publishableKey={publishableKey}
+      isSatellite={false}
+      domain={process.env.NEXT_PUBLIC_CLERK_DOMAIN || ''}
+      signInUrl="/sign-in"
+      signUpUrl="/sign-up"
+      afterSignInUrl="/dashboard"
+      afterSignUpUrl="/dashboard"
+    >
       {children}
-      <Toaster richColors />
+      <Toaster richColors position="top-right" />
     </ClerkProvider>
   );
 }

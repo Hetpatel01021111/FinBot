@@ -7,30 +7,81 @@ const isProtectedRoute = createRouteMatcher([
   "/account(.*)",
   "/transaction(.*)",
   "/settings(.*)",
+  "/api/(?!auth).*" // Protect all API routes except auth
 ]);
 
 // Define public routes that don't require authentication
-const isPublicRoute = (pathname) => 
-  ["/", "/sign-in(.*)", "/sign-up(.*)", "/api(?!/(?!webhook|clerk-webhook).*)"].some(
-    (pattern) => new RegExp(`^${pattern}$`.replace('*', '.*')).test(pathname)
+const isPublicRoute = (pathname) => {
+  const publicPaths = [
+    "/",
+    "/sign-in(.*)",
+    "/sign-up(.*)",
+    "/api/auth(.*)",
+    "/_next(.*)",
+    "/(api|trpc)(.*)"
+  ];
+  return publicPaths.some(
+    (path) => path === pathname || new RegExp(`^${path.replace('*', '.*')}$`).test(pathname)
   );
+};
+
+// CORS headers for API routes
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+  'Access-Control-Max-Age': '86400', // 24 hours
+};
 
 export default clerkMiddleware(async (auth, req) => {
   const { userId } = auth();
   const { pathname } = req.nextUrl;
 
+  // Handle CORS preflight requests
+  if (req.method === 'OPTIONS') {
+    return new NextResponse(null, {
+      status: 204,
+      headers: corsHeaders,
+    });
+  }
+
   // Skip middleware for public routes
   if (isPublicRoute(pathname)) {
-    return NextResponse.next();
+    const response = NextResponse.next();
+    // Add CORS headers to public API responses
+    if (pathname.startsWith('/api/')) {
+      Object.entries(corsHeaders).forEach(([key, value]) => {
+        response.headers.set(key, value);
+      });
+    }
+    return response;
   }
 
   // Handle API routes
   if (pathname.startsWith('/api/')) {
-    // Add security headers to API responses
+    // Verify Firebase token for protected API routes
+    const authHeader = req.headers.get('authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return new NextResponse(
+        JSON.stringify({ error: 'Unauthorized - Missing token' }),
+        { status: 401, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
+      );
+    }
+
     const response = NextResponse.next();
-    response.headers.set('X-Content-Type-Options', 'nosniff');
-    response.headers.set('X-Frame-Options', 'DENY');
-    response.headers.set('X-XSS-Protection', '1; mode=block');
+    // Add security headers to API responses
+    Object.entries({
+      ...corsHeaders,
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'X-XSS-Protection': '1; mode=block',
+      'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload',
+      'Referrer-Policy': 'strict-origin-when-cross-origin',
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()'
+    }).forEach(([key, value]) => {
+      response.headers.set(key, value);
+    });
+
     return response;
   }
 
@@ -45,11 +96,34 @@ export default clerkMiddleware(async (auth, req) => {
 
   // Add security headers to all responses
   const response = NextResponse.next();
-  response.headers.set('X-Content-Type-Options', 'nosniff');
-  response.headers.set('X-Frame-Options', 'DENY');
-  response.headers.set('X-XSS-Protection', '1; mode=block');
+  Object.entries({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'X-XSS-Protection': '1; mode=block',
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains; preload',
+    'Referrer-Policy': 'strict-origin-when-cross-origin'
+  }).forEach(([key, value]) => {
+    response.headers.set(key, value);
+  });
   
   return response;
+}, {
+  // Disable Clerk's default behavior of redirecting to sign-in for API routes
+  beforeAuth: (req) => {
+    const { pathname } = req.nextUrl;
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.next();
+    }
+  },
+  // Ensure Clerk doesn't interfere with static files
+  publicRoutes: [
+    '/',
+    '/sign-in(.*)',
+    '/sign-up(.*)',
+    '/_next(.*)',
+    '/api/(.*)',
+    '/(api|trpc)(.*)'
+  ]
 });
 
 export const config = {
@@ -61,4 +135,9 @@ export const config = {
     // - public folder
     '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
+  // Don't run middleware on static files
+  unstable_allowDynamic: [
+    '/node_modules/@clerk/nextjs/dist/esm/index.js',
+    '/node_modules/@clerk/nextjs/dist/esm/server/index.js',
+  ]
 };

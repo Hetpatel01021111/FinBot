@@ -2,7 +2,7 @@
 
 import aj from "@/lib/arcjet";
 import { request } from "@arcjet/next";
-import { auth, currentUser } from "@clerk/nextjs/server";
+import { getAuth } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { getAdminFirestore } from "@/lib/firebase-admin";
 
@@ -171,7 +171,7 @@ export async function createAccount(data) {
 
 export async function getDashboardData() {
   try {
-    const { userId } = await auth();
+    const { userId } = await getAuth();
     if (!userId) throw new Error("Unauthorized");
 
     const db = getDb();

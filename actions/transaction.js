@@ -2,9 +2,8 @@
 
 import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
-import aj from "@/lib/arcjet";
-import { request } from "@arcjet/next";
 import { getAdminFirestore } from "@/lib/firebase-admin";
+import { getAuth } from "@/lib/auth";
 
 // Lazy initialization of Firestore
 let db;
@@ -90,7 +89,7 @@ const serializeAmount = (obj) => ({
 // Create Transaction
 export async function createTransaction(data) {
   try {
-    const { userId } = await auth();
+    const { userId } = await getAuth();
     if (!userId) throw new Error("Unauthorized");
 
     // Get request data for ArcJet
@@ -189,7 +188,7 @@ export async function getTransaction(id) {
 
 export async function updateTransaction(id, data) {
   try {
-    const { userId } = await auth();
+    const { userId } = await getAuth();
     if (!userId) throw new Error("Unauthorized");
 
     // Find original transaction and its account
@@ -253,7 +252,7 @@ export async function updateTransaction(id, data) {
 // Get User Transactions
 export async function getUserTransactions(query = {}) {
   try {
-    const { userId } = await auth();
+    const { userId } = await getAuth();
     if (!userId) throw new Error("Unauthorized");
 
     const db = getDb();

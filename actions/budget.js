@@ -1,7 +1,7 @@
 "use server";
 
 import { getAdminFirestore } from "@/lib/firebase-admin";
-import { auth } from "@clerk/nextjs/server";
+import { getAuth } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 
 // Lazy initialization of Firestore
@@ -15,7 +15,7 @@ function getDb() {
 
 export async function getCurrentBudget(accountId) {
   try {
-    const { userId } = await auth();
+    const { userId } = await getAuth();
     if (!userId) throw new Error("Unauthorized");
 
     const db = getDb();
@@ -95,7 +95,7 @@ export async function getCurrentBudget(accountId) {
 
 export async function updateBudget(amount) {
   try {
-    const { userId } = await auth();
+    const { userId } = await getAuth();
     if (!userId) throw new Error("Unauthorized");
 
     const db = getDb();

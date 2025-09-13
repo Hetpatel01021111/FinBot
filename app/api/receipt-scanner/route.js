@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { jwtVerify } from "jose";
+import { getAuth } from "@/lib/auth";
 import { getAdminFirestore } from "@/lib/firebase-admin";
 
 // Don't initialize Firestore at the module level to avoid initialization issues during build
@@ -13,49 +13,44 @@ function getDb() {
   return db;
 }
 
-// Secret key for verifying tokens - must match the one used for generation
-const SECRET_KEY = new TextEncoder().encode(process.env.TOKEN_SECRET || "finbox-receipt-scanner-secret-key");
-
-// Verify the JWT token from the Authorization header
-async function verifyToken(req) {
+// Middleware to verify authentication
+async function authenticateRequest(req) {
   try {
-    // Check for Authorization header
+    // Get the auth token from the Authorization header
     const authHeader = req.headers.get("Authorization");
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return { valid: false, error: "Missing or invalid Authorization header" };
+      return { success: false, error: "Missing or invalid Authorization header" };
     }
 
     // Extract the token
     const token = authHeader.split(" ")[1];
     if (!token) {
-      return { valid: false, error: "No token provided" };
+      return { success: false, error: "No token provided" };
     }
 
-    // Verify the token
-    const { payload } = await jwtVerify(token, SECRET_KEY);
-    
-    // The payload now contains clerkUserId, which is sufficient for validation.
-    if (!payload.clerkUserId) {
-      return { valid: false, error: "Invalid token payload" };
+    // Verify the token using our auth utility
+    try {
+      const { userId } = await getAuth(token);
+      if (!userId) {
+        return { success: false, error: "Invalid token" };
+      }
+      return { success: true, userId };
+    } catch (error) {
+      console.error("Authentication error:", error);
+      return { success: false, error: "Authentication failed" };
     }
-
-    // Pass the clerkUserId along in case it's needed.
-    return { valid: true, userId: payload.clerkUserId };
   } catch (error) {
-    console.error("Token verification error:", error);
-    return { valid: false, error: error.message };
+    console.error("Error in authentication middleware:", error);
+    return { success: false, error: "Authentication error" };
   }
 }
 
 export async function POST(req) {
   try {
-    // Verify the token
-    const { valid, userId, error } = await verifyToken(req);
-    if (!valid || !userId) {
-      return NextResponse.json(
-        { error: error || "Unauthorized" },
-        { status: 401 }
-      );
+    // Authenticate the request
+    const { success, error, userId } = await authenticateRequest(req);
+    if (!success) {
+      return NextResponse.json({ error: error || "Unauthorized" }, { status: 401 });
     }
 
     // Get the form data
@@ -90,7 +85,7 @@ export async function POST(req) {
     
     // Log the error to Firestore for debugging
     try {
-      const { userId } = await verifyToken(req);
+      const { userId } = await authenticateRequest(req);
       if (userId) {
         const db = getDb();
         await db.collection("receiptScanErrors").add({
@@ -115,9 +110,20 @@ export async function POST(req) {
 }
 
 // Special endpoint for token validation - just returns success if token is valid
-export async function GET() {
-  return NextResponse.json({ 
-    status: "ok",
-    timestamp: new Date().toISOString() 
-  });
+export async function GET(req) {
+  try {
+    // Authenticate the request
+    const { success, error } = await authenticateRequest(req);
+    if (!success) {
+      return NextResponse.json({ error: error || "Unauthorized" }, { status: 401 });
+    }
+    // Return success if token is valid
+    return NextResponse.json({ status: "ok", timestamp: new Date().toISOString() });
+  } catch (error) {
+    console.error("Error in token validation:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
 }

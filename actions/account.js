@@ -1,7 +1,7 @@
 "use server";
 
 import { getAdminFirestore } from "@/lib/firebase-admin";
-import { auth } from "@clerk/nextjs/server";
+import { getAuth } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 
 // Lazy initialization of Firestore

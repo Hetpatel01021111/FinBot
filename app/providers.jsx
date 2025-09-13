@@ -20,6 +20,12 @@ export default function Providers({ children }) {
       signUpUrl="/sign-up"
       afterSignInUrl="/dashboard"
       afterSignUpUrl="/dashboard"
+      appearance={{
+        elements: {
+          formButtonPrimary: 'bg-primary text-primary-foreground hover:bg-primary/90',
+          footerActionLink: 'text-primary hover:text-primary/80',
+        },
+      }}
     >
       {children}
       <Toaster richColors position="top-right" />

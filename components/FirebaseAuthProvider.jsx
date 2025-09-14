@@ -74,11 +74,26 @@ export function FirebaseAuthProvider({ children }) {
     try {
       setLoading(true);
       setError(null);
+      
+      // Configure Google provider for better popup handling
+      googleProvider.setCustomParameters({
+        prompt: 'select_account'
+      });
+      
       const result = await signInWithPopup(auth, googleProvider);
       return { success: true, user: result.user };
     } catch (error) {
       console.error('Google sign in error:', error);
-      setError(error.message);
+      
+      // Handle popup blocked or closed errors gracefully
+      if (error.code === 'auth/popup-blocked' || error.code === 'auth/popup-closed-by-user') {
+        setError('Please allow popups and try again');
+      } else if (error.code === 'auth/cancelled-popup-request') {
+        setError('Sign-in was cancelled');
+      } else {
+        setError(error.message);
+      }
+      
       return { success: false, error: error.message };
     } finally {
       setLoading(false);

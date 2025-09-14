@@ -5,7 +5,7 @@ import { getAdminAuth } from "@/lib/firebase-admin";
 export async function POST(req) {
   try {
     // Get the authenticated user from Clerk
-    const { userId } = auth();
+    const { userId } = await auth();
     if (!userId) {
       return NextResponse.json(
         { error: "Unauthorized" },
@@ -15,6 +15,14 @@ export async function POST(req) {
 
     // Create a custom Firebase token for the user
     const adminAuth = getAdminAuth();
+    if (!adminAuth) {
+      console.error("Firebase Admin not initialized");
+      return NextResponse.json(
+        { error: "Firebase Admin not configured" },
+        { status: 500 }
+      );
+    }
+
     const customToken = await adminAuth.createCustomToken(userId);
 
     return NextResponse.json({
@@ -24,7 +32,7 @@ export async function POST(req) {
   } catch (error) {
     console.error("Firebase token generation error:", error);
     return NextResponse.json(
-      { error: "Failed to generate Firebase token" },
+      { error: "Failed to generate Firebase token", details: error.message },
       { status: 500 }
     );
   }

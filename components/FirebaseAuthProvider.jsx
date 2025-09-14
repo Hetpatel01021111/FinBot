@@ -20,7 +20,7 @@ export function FirebaseAuthProvider({ children }) {
   useEffect(() => {
     let unsubscribe = () => {};
 
-    const signIntoFirebase = async () => {
+    const syncAuth = async () => {
       if (!isLoaded) return;
       
       try {
@@ -33,11 +33,13 @@ export function FirebaseAuthProvider({ children }) {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
+              'Authorization': `Bearer ${await getToken()}`,
             },
           });
 
           if (!response.ok) {
-            throw new Error('Failed to get Firebase custom token');
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to get Firebase custom token');
           }
 
           const { token } = await response.json();
@@ -69,10 +71,13 @@ export function FirebaseAuthProvider({ children }) {
       });
     }
 
-    signIntoFirebase();
+    // Only sync auth if Clerk is loaded
+    if (isLoaded) {
+      syncAuth();
+    }
 
     return () => unsubscribe();
-  }, [userId, isLoaded]);
+  }, [userId, isLoaded, getToken]);
 
   const value = {
     firebaseUser,

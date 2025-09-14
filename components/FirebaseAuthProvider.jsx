@@ -37,7 +37,9 @@ export function FirebaseAuthProvider({ children }) {
           });
 
           if (!response.ok) {
-            throw new Error('Failed to get Firebase custom token');
+            const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+            console.error('Firebase token API error:', response.status, errorData);
+            throw new Error(`Failed to get Firebase custom token: ${errorData.error || response.statusText}`);
           }
 
           const { token } = await response.json();

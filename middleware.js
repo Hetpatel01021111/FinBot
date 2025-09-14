@@ -58,20 +58,11 @@ export default clerkMiddleware(async (auth, req) => {
 
   // Handle API routes
   if (pathname.startsWith('/api/')) {
-    // Allow auth-related API routes without token verification
-    if (pathname.startsWith('/api/auth/') || pathname.startsWith('/api/inngest/')) {
-      const response = NextResponse.next();
-      // Add CORS headers to API responses
-      Object.entries(corsHeaders).forEach(([key, value]) => {
-        response.headers.set(key, value);
-      });
-      return response;
-    }
-
-    // For other protected API routes, verify user is authenticated via Clerk
-    if (!userId) {
+    // Verify Firebase token for protected API routes
+    const authHeader = req.headers.get('authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return new NextResponse(
-        JSON.stringify({ error: 'Unauthorized - Not authenticated' }),
+        JSON.stringify({ error: 'Unauthorized - Missing token' }),
         { status: 401, headers: { 'Content-Type': 'application/json', ...corsHeaders } }
       );
     }

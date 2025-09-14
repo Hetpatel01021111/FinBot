@@ -170,7 +170,7 @@ export function DashboardOverview({ accounts, transactions }) {
   const [selectedAccountId, setSelectedAccountId] = useState(
     accounts.find((a) => a.isDefault)?.id || accounts[0]?.id
   );
-  const [activeIndex, setActiveIndex] = useState(0);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const [animationComplete, setAnimationComplete] = useState(false);
   const [timeframe, setTimeframe] = useState("month"); // "month", "week", "year"
 
@@ -415,23 +415,12 @@ export function DashboardOverview({ accounts, transactions }) {
             </div>
           ) : (
             <div className="pt-8 pb-8">
-              <div className="text-center mb-6">
-                <p className="text-sm text-gray-500">Total Expenses</p>
-                <p className="text-4xl font-bold text-black">
-                  ${totalExpenses.toFixed(2)}
-                </p>
-                <p className="text-sm text-gray-500 mt-1">
-                  {getTimeframeLabel()}
-                </p>
-              </div>
-              
               <div className="relative flex justify-center items-center">
                 <div className="w-[280px] h-[280px]">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
                         activeIndex={activeIndex}
-                        activeShape={renderActiveShape}
                         data={pieChartData}
                         cx="50%"
                         cy="50%"
@@ -440,6 +429,7 @@ export function DashboardOverview({ accounts, transactions }) {
                         paddingAngle={3}
                         dataKey="value"
                         onMouseEnter={onPieEnter}
+                        onMouseLeave={() => setActiveIndex(-1)}
                         animationBegin={0}
                         animationDuration={1000}
                         animationEasing="ease-out"
@@ -462,6 +452,35 @@ export function DashboardOverview({ accounts, transactions }) {
                   </ResponsiveContainer>
                 </div>
                 
+                {/* Center text that updates based on hover */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                  {activeIndex >= 0 && pieChartData[activeIndex] ? (
+                    <>
+                      <div className="text-2xl mb-1">
+                        {getCategoryStyle(pieChartData[activeIndex].name).icon}
+                      </div>
+                      <div className="text-sm text-gray-500 capitalize">
+                        {pieChartData[activeIndex].name.replace(/-/g, ' ')}
+                      </div>
+                      <div className="text-2xl font-bold text-black">
+                        ${pieChartData[activeIndex].value.toFixed(2)}
+                      </div>
+                      <div className="text-xs text-gray-500">
+                        {((pieChartData[activeIndex].value / totalExpenses) * 100).toFixed(1)}% of total
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-sm text-gray-500">Total Expenses</div>
+                      <div className="text-3xl font-bold text-black">
+                        ${totalExpenses.toFixed(2)}
+                      </div>
+                      <div className="text-sm text-gray-500 mt-1">
+                        {getTimeframeLabel()}
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
               
               <div className="grid grid-cols-3 gap-3 mt-6 px-6">
@@ -470,8 +489,10 @@ export function DashboardOverview({ accounts, transactions }) {
                   return (
                     <div 
                       key={`legend-${index}`} 
-                      className="flex items-center"
-                      onClick={() => setActiveIndex(index)}
+                      className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded-lg transition-colors"
+                      onClick={() => setActiveIndex(activeIndex === index ? -1 : index)}
+                      onMouseEnter={() => setActiveIndex(index)}
+                      onMouseLeave={() => setActiveIndex(-1)}
                     >
                       <div 
                         className="w-3 h-3 rounded-full mr-2 flex-shrink-0" 

@@ -30,8 +30,8 @@ export default function Providers({ children }) {
       domain={process.env.NEXT_PUBLIC_CLERK_DOMAIN || ''}
       signInUrl="/sign-in"
       signUpUrl="/sign-up"
-      fallbackRedirectUrl="/dashboard"
-      forceRedirectUrl="/dashboard"
+      afterSignInUrl="/dashboard"
+      afterSignUpUrl="/dashboard"
     >
       <FirebaseAuthProvider>
         {children}
